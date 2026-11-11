@@ -6,7 +6,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "dev:api": "pnpm --filter @juris-connect/api dev"
+    "dev:api": "pnpm --filter @juris-connect/api dev",
+    "dev:web": "pnpm --filter @juris-connect/web dev"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
