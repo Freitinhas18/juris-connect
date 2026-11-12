@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:17
+    container_name: juris-connect-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: juris
+      POSTGRES_PASSWORD: juris_dev
+      POSTGRES_DB: juris_connect
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

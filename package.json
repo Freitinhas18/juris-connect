@@ -7,7 +7,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "dev:api": "pnpm --filter @juris-connect/api dev",
-    "dev:web": "pnpm --filter @juris-connect/web dev"
+    "dev:web": "pnpm --filter @juris-connect/web dev",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
