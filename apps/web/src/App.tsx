@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { demoActivities, demoCases, demoMetrics, demoUpcoming, navigation, type ModuleKey } from "./demoData";
+import ClientsPage from "./clients/ClientsPage";
 import "./styles.css";
 
 type IconName = (typeof navigation)[number]["icon"] | "search" | "chevron" | "plus" | "arrow" | "more" | "bell" | "clock" | "spark" | "menu" | "calendar";
@@ -39,7 +40,7 @@ function App() {
     </aside>
     <main className="main-area">
       <header className="topbar"><div className="mobile-brand"><button className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Abrir menu"><Icon name="menu"/></button><div className="brand-mark"><span></span><span></span><span></span><span></span></div></div><div className="breadcrumbs"><span>Workspace</span><Icon name="chevron" size={14}/><strong>{pageTitles[active]}</strong></div><div className="topbar-actions"><label className="search-box"><Icon name="search" size={17}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar processos, clientes..."/><kbd>⌘ K</kbd></label><button className="icon-button notification" aria-label="Notificações"><Icon name="bell"/><i/></button><div className="avatar top-avatar">LM</div></div></header>
-      {active === "dashboard" ? <Dashboard cases={filteredCases} setActive={setActive}/> : <ModulePlaceholder title={pageTitles[active]} module={active}/>}
+      {active === "dashboard" ? <Dashboard cases={filteredCases} setActive={setActive}/> : active === "clients" ? <ClientsPage/> : <ModulePlaceholder title={pageTitles[active]} module={active}/>}
     </main>
     {sidebarOpen && <button className="scrim" aria-label="Fechar menu" onClick={() => setSidebarOpen(false)}/>}
   </div>;
