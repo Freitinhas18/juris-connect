@@ -1,43 +1,8 @@
-export const taskStatuses = [
-  "A fazer",
-  "Em andamento",
-  "Em revisão",
-  "Aguardando cliente",
-  "Aguardando órgão ou terceiro",
-  "Concluída",
-  "Cancelada",
-] as const;
-
-export const taskPriorities = ["Baixa", "Média", "Alta", "Urgente"] as const;
-
-export type TaskStatus = (typeof taskStatuses)[number];
-export type TaskPriority = (typeof taskPriorities)[number];
-export type TaskSubtask = { id: string; title: string; completed: boolean };
-
-export type TaskHistoryEntry = {
-  id: string;
-  date: string;
-  type: "created" | "status" | "transfer" | "subtask" | "updated";
-  message: string;
-  previousStatus?: TaskStatus;
-  newStatus?: TaskStatus;
-  actorId: string;
-};
-
-export type ResponsibilityTransfer = {
-  id: string;
-  fromAssigneeId: string;
-  toAssigneeId: string;
-  date: string;
-  justification: string;
-};
-
-export type WaitPeriod = {
-  id: string;
-  status: Extract<TaskStatus, "Aguardando cliente" | "Aguardando órgão ou terceiro">;
-  startedAt: string;
-  endedAt: string | null;
-};
+import type { TaskHistoryEntry, TaskInput, TaskPriority, TaskSubtask, TaskTransfer, TaskWaitPeriod, TaskStatus } from "@juris-connect/shared";
+export { taskPriorities, taskStatuses } from "@juris-connect/shared";
+export type { TaskHistoryEntry, TaskInput, TaskPriority, TaskSubtask, TaskStatus } from "@juris-connect/shared";
+export type ResponsibilityTransfer = TaskTransfer;
+export type WaitPeriod = TaskWaitPeriod;
 
 export type TaskRecord = {
   id: string;
@@ -56,7 +21,5 @@ export type TaskRecord = {
   transfers: ResponsibilityTransfer[];
   waitPeriods: WaitPeriod[];
 };
-
-export type TaskInput = Pick<TaskRecord, "title" | "description" | "processId" | "assigneeId" | "status" | "priority" | "startDate" | "dueDate" | "subtasks">;
 
 export type TeamMember = { id: string; name: string; role: string; initials: string; color: string };

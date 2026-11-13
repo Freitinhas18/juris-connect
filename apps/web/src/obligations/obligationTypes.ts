@@ -1,7 +1,8 @@
 import type { TeamMember } from "../tasks/taskTypes";
+import { obligationOccurrenceStatuses, obligationPeriodicities } from "@juris-connect/shared";
 
-export const periodicities = ["Pontual", "Mensal", "Trimestral", "Semestral", "Anual"] as const;
-export const occurrenceStatuses = ["Programada", "Em preparação", "Aguardando validação", "Cumprida", "Atrasada", "Dispensada"] as const;
+export const periodicities = obligationPeriodicities;
+export const occurrenceStatuses = obligationOccurrenceStatuses;
 
 export type Periodicity = (typeof periodicities)[number];
 export type OccurrenceStatus = (typeof occurrenceStatuses)[number];

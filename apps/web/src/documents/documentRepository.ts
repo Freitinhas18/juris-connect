@@ -1,11 +1,23 @@
 import { demoDocuments } from "./documentDemoData";
-import type { DocumentHistoryEntry, DocumentInput, DocumentRecord } from "./documentTypes";
+import type { DocumentRecord } from "./documentTypes";
+
+// Read-only compatibility layer for importing records created by the previous local demo.
 export const DOCUMENT_STORAGE_KEY = "juris-connect:demo-documents:v1";
-const copyDemo = () => demoDocuments.map((item) => ({ ...item, links: { ...item.links, clientIds: [...item.links.clientIds], enterpriseIds: [...item.links.enterpriseIds], processIds: [...item.links.processIds], taskIds: [...item.links.taskIds], occurrences: item.links.occurrences.map((link) => ({ ...link })) }, history: item.history.map((entry) => ({ ...entry })) }));
-function valid(value: unknown): value is DocumentRecord { if (!value || typeof value !== "object") return false; const d = value as Partial<DocumentRecord>; return typeof d.id === "string" && typeof d.name === "string" && typeof d.originalName === "string" && typeof d.extension === "string" && typeof d.mimeType === "string" && typeof d.size === "number" && typeof d.addedAt === "string" && typeof d.description === "string" && typeof d.category === "string" && typeof d.responsible === "string" && typeof d.status === "string" && Boolean(d.links && Array.isArray(d.links.clientIds) && Array.isArray(d.links.enterpriseIds) && Array.isArray(d.links.processIds) && Array.isArray(d.links.taskIds) && Array.isArray(d.links.occurrences)) && Array.isArray(d.history); }
-export function getDocuments(): DocumentRecord[] { try { const saved = window.localStorage.getItem(DOCUMENT_STORAGE_KEY); if (saved === null) return copyDemo(); const parsed: unknown = JSON.parse(saved); return Array.isArray(parsed) && parsed.every(valid) ? parsed : copyDemo(); } catch { return copyDemo(); } }
-function persist(records: DocumentRecord[]): DocumentRecord[] { try { window.localStorage.setItem(DOCUMENT_STORAGE_KEY, JSON.stringify(records)); } catch { /* UI remains usable for this session if browser storage is unavailable. */ } return records; }
-function history(message: string): DocumentHistoryEntry { return { id: crypto.randomUUID(), date: new Date().toISOString(), message, actor: "Lucas Martins (demonstrativo)" }; }
-export function createDocument(input: DocumentInput, file: File, current: DocumentRecord[], id = crypto.randomUUID()): DocumentRecord[] { const now = new Date().toISOString(); const record: DocumentRecord = { ...input, id, name: input.name.trim() || file.name, originalName: file.name, extension: file.name.includes(".") ? file.name.split(".").pop()!.toUpperCase() : "Arquivo", mimeType: file.type || "Tipo não informado", size: file.size, addedAt: now, links: { ...input.links, clientIds: [...input.links.clientIds], enterpriseIds: [...input.links.enterpriseIds], processIds: [...input.links.processIds], taskIds: [...input.links.taskIds], occurrences: input.links.occurrences.map((link) => ({ ...link })) }, history: [history("Documento incluído no armazenamento demonstrativo local.")] }; return persist([record, ...current]); }
-export function updateDocument(id: string, input: DocumentInput, current: DocumentRecord[]): DocumentRecord[] { return persist(current.map((item) => { if (item.id !== id) return item; const entries = [...item.history]; if (input.category !== item.category) entries.push(history("Categoria alterada para " + input.category + ".")); if (input.status !== item.status) entries.push(history("Status alterado para " + input.status + ".")); const linkKinds: (keyof DocumentInput["links"])[] = ["clientIds", "enterpriseIds", "processIds", "taskIds", "occurrences"]; for (const kind of linkKinds) { const before = item.links[kind] as unknown[]; const after = input.links[kind] as unknown[]; const keyOf = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value); const beforeKeys = new Set(before.map(keyOf)); const afterKeys = new Set(after.map(keyOf)); const added = after.filter((value) => !beforeKeys.has(keyOf(value))).length; const removed = before.filter((value) => !afterKeys.has(keyOf(value))).length; const label = ({ clientIds: "clientes", enterpriseIds: "empreendimentos", processIds: "processos", taskIds: "tarefas", occurrences: "ocorrências" } as const)[kind]; if (added) entries.push(history(added + " vínculo(s) de " + label + " incluído(s).")); if (removed) entries.push(history(removed + " vínculo(s) de " + label + " removido(s).")); } if (input.name !== item.name || input.description !== item.description || input.responsible !== item.responsible) entries.push(history("Informações do documento atualizadas.")); return { ...item, ...input, links: { ...input.links }, history: entries }; })); }
-export function deleteDocument(id: string, current: DocumentRecord[]): DocumentRecord[] { const item = current.find((record) => record.id === id); return item ? persist(current.filter((record) => record.id !== id)) : current; }
+function valid(value: unknown): value is DocumentRecord {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<DocumentRecord>;
+  return typeof item.id === "string" && typeof item.name === "string" && typeof item.originalName === "string" &&
+    typeof item.extension === "string" && typeof item.mimeType === "string" && typeof item.size === "number" &&
+    typeof item.addedAt === "string" && typeof item.description === "string" && typeof item.category === "string" &&
+    typeof item.responsible === "string" && typeof item.status === "string" && Boolean(item.links &&
+      Array.isArray(item.links.clientIds) && Array.isArray(item.links.enterpriseIds) && Array.isArray(item.links.processIds) &&
+      Array.isArray(item.links.taskIds) && Array.isArray(item.links.occurrences)) && Array.isArray(item.history);
+}
+export function getDocuments(): DocumentRecord[] {
+  try {
+    const saved = window.localStorage.getItem(DOCUMENT_STORAGE_KEY);
+    if (saved === null) return demoDocuments;
+    const parsed: unknown = JSON.parse(saved);
+    return Array.isArray(parsed) && parsed.every(valid) ? parsed.map((item) => ({ ...item, updatedAt: item.updatedAt || item.addedAt })) : [];
+  } catch { return []; }
+}

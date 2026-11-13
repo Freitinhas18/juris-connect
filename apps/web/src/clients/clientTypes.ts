@@ -1,5 +1,6 @@
-export type ClientKind = "Empresa" | "Pessoa física" | "Condomínio" | "Órgão público";
-export type ClientStatus = "active" | "inactive";
+import type { ClientInput, ClientKind, ClientStatus } from "@juris-connect/shared";
+
+export type { ClientInput, ClientKind, ClientStatus };
 
 export type ClientRecord = {
   id: string;
@@ -12,9 +13,9 @@ export type ClientRecord = {
   address: string;
   notes: string;
   ventures: string[];
+  venturesAvailable?: boolean;
   relatedCases?: number;
   status: ClientStatus;
   createdAt: string;
+  updatedAt?: string;
 };
-
-export type ClientInput = Omit<ClientRecord, "id" | "createdAt" | "ventures" | "relatedCases">;

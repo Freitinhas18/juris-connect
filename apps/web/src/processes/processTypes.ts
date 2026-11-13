@@ -1,45 +1,11 @@
-export const processTypes = [
-  "Licenciamento ambiental",
-  "Outorga de uso da água",
-  "Renovação de licença",
-  "Autorização ambiental",
-  "Regularização",
-  "Outros",
-] as const;
+import type { ProcessHistoryEntry, ProcessInput as SharedProcessInput } from "@juris-connect/shared";
+export { processPriorities, processStages, processStatuses, processTypes } from "@juris-connect/shared";
+export type { ProcessHistoryEntry } from "@juris-connect/shared";
 
-export const processStages = [
-  "Preparação",
-  "Documentação",
-  "Protocolização",
-  "Em análise",
-  "Exigência ou complementação",
-  "Aguardando retorno",
-  "Concluído",
-] as const;
-
-export const processStatuses = [
-  "Rascunho",
-  "Em andamento",
-  "Aguardando cliente",
-  "Aguardando órgão responsável",
-  "Concluído",
-  "Suspenso",
-  "Cancelado",
-] as const;
-
-export const processPriorities = ["Baixa", "Média", "Alta", "Urgente"] as const;
-
-export type ProcessType = (typeof processTypes)[number];
-export type ProcessStage = (typeof processStages)[number];
-export type ProcessStatus = (typeof processStatuses)[number];
-export type ProcessPriority = (typeof processPriorities)[number];
-
-export type ProcessHistoryEntry = {
-  id: string;
-  date: string;
-  type: "created" | "stage" | "status" | "updated";
-  message: string;
-};
+export type ProcessType = (typeof import("@juris-connect/shared").processTypes)[number];
+export type ProcessStage = (typeof import("@juris-connect/shared").processStages)[number];
+export type ProcessStatus = (typeof import("@juris-connect/shared").processStatuses)[number];
+export type ProcessPriority = (typeof import("@juris-connect/shared").processPriorities)[number];
 
 export type ProcessRecord = {
   id: string;
@@ -57,6 +23,7 @@ export type ProcessRecord = {
   status: ProcessStatus;
   history: ProcessHistoryEntry[];
   createdAt: string;
+  updatedAt?: string;
 };
 
-export type ProcessInput = Omit<ProcessRecord, "id" | "history" | "createdAt">;
+export type ProcessInput = SharedProcessInput;

@@ -1,5 +1,10 @@
 node_modules
+.pnpm-store/
 dist
+.data/
+apps/api/.data/
+playwright-report/
+test-results/
 .env
 .env.*
 !.env.example

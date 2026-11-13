@@ -1,0 +1,1 @@
+CREATE INDEX "auth_login_limits_updated_at_idx" ON "auth_login_limits" USING btree ("updated_at");

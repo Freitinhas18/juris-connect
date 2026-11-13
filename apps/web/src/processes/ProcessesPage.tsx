@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { getClients } from "../clients/clientRepository";
+import { listClients } from "../clients/clientApi";
 import type { ClientRecord } from "../clients/clientTypes";
-import { getEnterprises } from "../enterprises/enterpriseRepository";
+import { listEnterprises } from "../enterprises/enterpriseApi";
 import type { EnterpriseRecord } from "../enterprises/enterpriseTypes";
-import { createProcess, getProcesses, updateProcess } from "./processRepository";
+import { createProcess as createProcessRequest, deleteProcess, listProcesses, updateProcess as updateProcessRequest, type ProcessCreateInput } from "./processApi";
+import { getLegacyProcessBackup, inspectLegacyProcesses, markLegacyProcessImported, type LegacyProcessInspection } from "./processRepository";
 import { processPriorities, processStages, processStatuses, processTypes } from "./processTypes";
 import type { ProcessHistoryEntry, ProcessInput, ProcessPriority, ProcessRecord, ProcessStage, ProcessStatus, ProcessType } from "./processTypes";
 import "./processes.css";
@@ -32,9 +33,13 @@ function formatDate(date: string) {
 }
 
 export default function ProcessesPage({ onOpenEnterprises }: { onOpenEnterprises: () => void }) {
-  const [clients] = useState<ClientRecord[]>(getClients);
-  const [enterprises] = useState<EnterpriseRecord[]>(getEnterprises);
-  const [processes, setProcesses] = useState<ProcessRecord[]>(getProcesses);
+  const [clients, setClients] = useState<ClientRecord[]>([]);
+  const [enterprises, setEnterprises] = useState<EnterpriseRecord[]>([]);
+  const [processes, setProcesses] = useState<ProcessRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [operationError, setOperationError] = useState("");
+  const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [clientFilter, setClientFilter] = useState<Filter>("all");
   const [enterpriseFilter, setEnterpriseFilter] = useState<Filter>("all");
@@ -43,6 +48,30 @@ export default function ProcessesPage({ onOpenEnterprises }: { onOpenEnterprises
   const [priorityFilter, setPriorityFilter] = useState<Filter>("all");
   const [formState, setFormState] = useState<FormState>(null);
   const [selected, setSelected] = useState<ProcessRecord | null>(null);
+  const [legacy, setLegacy] = useState<LegacyProcessInspection>(() => inspectLegacyProcesses([]));
+  const [legacyMappings, setLegacyMappings] = useState<Record<string, string>>({});
+  const [legacyBusy, setLegacyBusy] = useState(false);
+  const [legacyMessage, setLegacyMessage] = useState("");
+  const [legacyError, setLegacyError] = useState("");
+  async function load() {
+    setLoading(true); setLoadError("");
+    const localInspection = inspectLegacyProcesses([]);
+    setLegacy(localInspection);
+    setLegacyMappings(Object.fromEntries(localInspection.candidates.map((candidate) => [candidate.sourceId, candidate.enterpriseId])));
+    try {
+      const [clientsResult, enterprisesResult, processesResult] = await Promise.allSettled([listClients(), listEnterprises(), listProcesses()]);
+      const loadedClients = clientsResult.status === "fulfilled" ? clientsResult.value : [];
+      const loadedEnterprises = enterprisesResult.status === "fulfilled" ? enterprisesResult.value : [];
+      const loadedProcesses = processesResult.status === "fulfilled" ? processesResult.value : [];
+      setClients(loadedClients); setEnterprises(loadedEnterprises); setProcesses(loadedProcesses);
+      const errors = [clientsResult, enterprisesResult, processesResult].flatMap((result) => result.status === "rejected" ? [result.reason instanceof Error ? result.reason.message : "Falha ao consultar API"] : []);
+      if (errors.length) setLoadError(errors.join(" "));
+      const inspection = inspectLegacyProcesses(loadedEnterprises);
+      setLegacy(inspection);
+      setLegacyMappings(Object.fromEntries(inspection.candidates.map((candidate) => [candidate.sourceId, candidate.enterpriseId])));
+    } finally { setLoading(false); }
+  }
+  useEffect(() => { void load(); }, []);
   const enterprisesById = useMemo(() => new Map(enterprises.map((item) => [item.id, item])), [enterprises]);
   const clientsById = useMemo(() => new Map(clients.map((item) => [item.id, item])), [clients]);
   const linkedClient = (process: ProcessRecord) => {
@@ -72,28 +101,83 @@ export default function ProcessesPage({ onOpenEnterprises }: { onOpenEnterprises
     });
   }, [processes, enterprisesById, clientsById, search, clientFilter, enterpriseFilter, typeFilter, statusFilter, priorityFilter]);
 
-  function saveNew(input: ProcessInput) {
-    setProcesses((current) => createProcess(input, current));
-    setFormState(null);
+  async function saveNew(input: ProcessInput) {
+    setBusy(true); setOperationError("");
+    try { const created = await createProcessRequest(input); setProcesses((current) => [created, ...current]); setFormState(null); }
+    catch (error) { setOperationError(error instanceof Error ? error.message : "Não foi possível cadastrar o processo."); throw error; }
+    finally { setBusy(false); }
   }
-  function saveEdit(input: ProcessInput) {
+  async function saveEdit(input: ProcessInput) {
     if (formState?.mode !== "edit") return;
     const id = formState.process.id;
-    setProcesses((current) => updateProcess(id, input, current));
-    setSelected((current) => current?.id === id ? { ...current, ...input } : current);
-    setFormState(null);
+    setBusy(true); setOperationError("");
+    try { const updated = await updateProcessRequest(id, input); setProcesses((current) => current.map((item) => item.id === id ? updated : item)); setSelected((current) => current?.id === id ? updated : current); setFormState(null); }
+    catch (error) { setOperationError(error instanceof Error ? error.message : "Não foi possível atualizar o processo."); throw error; }
+    finally { setBusy(false); }
+  }
+  async function remove(item: ProcessRecord) {
+    if (!window.confirm(`Excluir definitivamente o processo “${item.name}”?`)) return;
+    setBusy(true); setOperationError("");
+    try { await deleteProcess(item.id); setProcesses((current) => current.filter((process) => process.id !== item.id)); setSelected(null); }
+    catch (error) { setOperationError(error instanceof Error ? error.message : "Não foi possível excluir o processo."); }
+    finally { setBusy(false); }
   }
   function openEdit(process: ProcessRecord) {
     setSelected(null);
     setFormState({ mode: "edit", process });
   }
 
-  if (!activeEnterprises.length) return <div className="page-content processes-page"><PageTitle/><div className="demo-notice"><span className="demo-dot"/> Ambiente demonstrativo <span>·</span> Nenhum empreendimento vinculado a um cliente foi encontrado.</div><section className="processes-empty"><span><BriefcaseIcon/></span><h2>Cadastre um empreendimento primeiro</h2><p>Todo processo precisa estar relacionado a um empreendimento e, por ele, a um cliente cadastrado.</p><button className="primary-button" onClick={onOpenEnterprises}>Ir para Empreendimentos <span aria-hidden="true">→</span></button></section></div>;
+  async function importLegacy() {
+    if (!legacy.candidates.length || legacyBusy) return;
+    setLegacyBusy(true); setLegacyError(""); setLegacyMessage("");
+    const imported: ProcessRecord[] = [];
+    const failures: string[] = [];
+    for (const candidate of legacy.candidates) {
+      const enterpriseId = legacyMappings[candidate.sourceId] ?? candidate.enterpriseId;
+      if (!enterprises.some((enterprise) => enterprise.id === enterpriseId)) { failures.push(`${candidate.process.name}: selecione um empreendimento cadastrado.`); continue; }
+      const { id: _oldId, updatedAt: _oldUpdatedAt, ...oldRecord } = candidate.process;
+      const input: ProcessCreateInput = { ...oldRecord, enterpriseId };
+      try {
+        const created = await createProcessRequest(input);
+        markLegacyProcessImported(candidate.sourceId, created.id);
+        imported.push(created);
+      } catch (error) {
+        failures.push(`${candidate.process.name}: ${error instanceof Error ? error.message : "falha na importação"}`);
+      }
+    }
+    if (imported.length) setProcesses((current) => [...imported, ...current]);
+    const refreshed = inspectLegacyProcesses(enterprises);
+    setLegacy(refreshed);
+    setLegacyMappings(Object.fromEntries(refreshed.candidates.map((candidate) => [candidate.sourceId, legacyMappings[candidate.sourceId] ?? candidate.enterpriseId])));
+    setLegacyMessage(imported.length ? `${imported.length} processo(s) copiado(s) para o PostgreSQL. O backup local foi mantido.` : "Nenhum registro foi importado.");
+    if (failures.length) setLegacyError(failures.join(" "));
+    setLegacyBusy(false);
+  }
+
+  function downloadLegacyBackup() {
+    const raw = getLegacyProcessBackup();
+    if (raw === null) return;
+    const url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = "juris-connect-processes-local-backup.json"; anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  const legacyPanel = legacy.exists && <section className="process-migration-panel" aria-label="Migração de dados locais">
+    <div className="process-migration-heading"><div><strong>Dados locais preservados</strong><p>Encontramos uma cópia local de processos. Nada será removido do navegador.</p></div><button type="button" className="enterprise-backup-button" onClick={downloadLegacyBackup}>Baixar backup JSON</button></div>
+    {legacy.parseError && <p className="process-migration-warning" role="alert">O conteúdo local não pôde ser interpretado. Ele permanece intacto; baixe o backup para revisão manual.</p>}
+    {legacy.invalidCount > 0 && <p className="process-migration-warning">{legacy.invalidCount} registro(s) local(is) com formato não reconhecido não serão importados e continuam no backup.</p>}
+    {legacy.candidates.length > 0 ? <><p className="process-migration-summary">{legacy.candidates.length} registro(s) personalizado(s) aguardam associação a um empreendimento do PostgreSQL. Demonstrações inalteradas: {legacy.unchangedDemoCount} (não importadas).</p><div className="process-migration-list">{legacy.candidates.map((candidate) => <label key={candidate.sourceId}><span><strong>{candidate.process.name}</strong><small>Empreendimento anterior: {candidate.previousEnterpriseName || "não localizado nos dados locais"}</small></span><select aria-label={`Associar ${candidate.process.name} a um empreendimento`} value={legacyMappings[candidate.sourceId] ?? ""} onChange={(event) => setLegacyMappings((current) => ({ ...current, [candidate.sourceId]: event.target.value }))}><option value="">Selecione um empreendimento atual</option>{enterprises.map((enterprise) => <option key={enterprise.id} value={enterprise.id}>{enterprise.name}</option>)}</select></label>)}</div><div className="process-migration-actions"><span>A importação preserva os campos e o histórico e mantém a cópia local.</span><button className="primary-button" disabled={legacyBusy || legacy.candidates.some((candidate) => !enterprises.some((enterprise) => enterprise.id === (legacyMappings[candidate.sourceId] ?? "")))} onClick={() => void importLegacy()}>{legacyBusy ? "Importando…" : "Importar registros selecionados"}</button></div></> : !legacy.parseError && <p className="process-migration-summary">{legacy.unchangedDemoCount ? `A cópia contém ${legacy.unchangedDemoCount} processo(s) de demonstração sem alterações; não há dados personalizados pendentes.` : "Não há registros personalizados pendentes de importação."}</p>}
+    {legacyMessage && <p className="process-migration-success" role="status">{legacyMessage}</p>}{legacyError && <p className="process-migration-warning" role="alert">{legacyError}</p>}
+  </section>;
 
   return <div className="page-content processes-page">
-    <PageTitle onCreate={() => setFormState({ mode: "create" })}/>
-    <div className="demo-notice"><span className="demo-dot"/> Ambiente demonstrativo <span>·</span> Processos e histórico são fictícios, mantidos apenas neste navegador.</div>
-    <section className="process-stat-grid" aria-label="Indicadores demonstrativos de processos">
+    <PageTitle onCreate={activeEnterprises.length && !busy ? () => { setOperationError(""); setFormState({ mode: "create" }); } : undefined}/>
+    <div className="process-api-notice"><span className="live-dot"/> Processos carregados pela API e persistidos no PostgreSQL.</div>
+    {loadError && <div className="process-api-error" role="alert">{loadError}<button onClick={() => void load()}>Tentar novamente</button></div>}
+    {operationError && <div className="process-api-error" role="alert">{operationError}<button onClick={() => setOperationError("")} aria-label="Fechar erro">×</button></div>}
+    {legacyPanel}
+    {!loading && !loadError && !activeEnterprises.length && <section className="processes-empty"><span><BriefcaseIcon/></span><h2>Cadastre um empreendimento primeiro</h2><p>Todo processo precisa estar relacionado a um empreendimento e, por ele, a um cliente cadastrado no PostgreSQL.</p><button className="primary-button" onClick={onOpenEnterprises}>Ir para Empreendimentos <span aria-hidden="true">→</span></button></section>}
+    <section className="process-stat-grid" aria-label="Indicadores de processos">
       <StatCard label="Total de processos" value={processes.length} tone="violet" icon={<BriefcaseIcon/>}/>
       <StatCard label="Em andamento" value={inProgressCount} tone="blue"/>
       <StatCard label="Aguardando retorno" value={waitingCount} tone="amber"/>
@@ -113,12 +197,12 @@ export default function ProcessesPage({ onOpenEnterprises }: { onOpenEnterprises
       <div className="process-table-scroll"><table className="process-table"><thead><tr><th>PROCESSO</th><th>PROTOCOLO</th><th>TIPO</th><th>CLIENTE / EMPREENDIMENTO</th><th>ETAPA ATUAL</th><th>RESPONSÁVEL</th><th>PRIORIDADE</th><th>PRAZO PREVISTO</th><th>STATUS</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{filtered.map((item) => {
         const enterprise = enterprisesById.get(item.enterpriseId);
         const client = linkedClient(item);
-        return <tr key={item.id}><td><button className="process-name-button" onClick={() => setSelected(item)}><strong>{item.name}</strong></button></td><td>{item.protocol || "—"}</td><td><span className="process-type-pill">{item.processType}</span></td><td><span className="process-linked-names"><b>{client?.name ?? "Cliente não encontrado"}</b><small>{enterprise?.name ?? "Empreendimento não encontrado"}</small></span></td><td><span className="process-stage-cell"><i/>{item.stage}</span></td><td>{item.manager}</td><td><PriorityBadge priority={item.priority}/></td><td><span className={"process-deadline" + (isOverdue(item) ? " overdue" : "")}>{item.dueDate ? formatDate(item.dueDate) : "—"}{isOverdue(item) && <small>Vencido</small>}</span></td><td><StatusBadge status={item.status}/></td><td><div className="process-row-actions"><button onClick={() => setSelected(item)} aria-label={"Ver detalhes de " + item.name}>Detalhes</button><button onClick={() => setFormState({ mode: "edit", process: item })} aria-label={"Editar " + item.name}>Editar</button></div></td></tr>;
-      })}</tbody></table>{filtered.length === 0 && <div className="process-empty"><span><SearchIcon/></span><strong>Nenhum processo encontrado</strong><p>Altere a busca ou os filtros para consultar outros processos.</p><button onClick={() => { setSearch(""); setClientFilter("all"); setEnterpriseFilter("all"); setTypeFilter("all"); setStatusFilter("all"); setPriorityFilter("all"); }}>Limpar filtros</button></div>}</div>
-      <div className="process-list-footer"><span>Exibindo <strong>{filtered.length}</strong> de <strong>{processes.length}</strong> processos demonstrativos</span><span>Prazos são informados manualmente pelo usuário</span></div>
+        return <tr key={item.id}><td><button className="process-name-button" onClick={() => setSelected(item)}><strong>{item.name}</strong></button></td><td>{item.protocol || "—"}</td><td><span className="process-type-pill">{item.processType}</span></td><td><span className="process-linked-names"><b>{client?.name ?? "Cliente não encontrado"}</b><small>{enterprise?.name ?? "Empreendimento não encontrado"}</small></span></td><td><span className="process-stage-cell"><i/>{item.stage}</span></td><td>{item.manager}</td><td><PriorityBadge priority={item.priority}/></td><td><span className={"process-deadline" + (isOverdue(item) ? " overdue" : "")}>{item.dueDate ? formatDate(item.dueDate) : "—"}{isOverdue(item) && <small>Vencido</small>}</span></td><td><StatusBadge status={item.status}/></td><td><div className="process-row-actions"><button disabled={busy} onClick={() => setSelected(item)} aria-label={"Ver detalhes de " + item.name}>Detalhes</button><button disabled={busy} onClick={() => { setOperationError(""); setFormState({ mode: "edit", process: item }); }} aria-label={"Editar " + item.name}>Editar</button><button disabled={busy} onClick={() => void remove(item)} aria-label={"Excluir " + item.name}>Excluir</button></div></td></tr>;
+      })}</tbody></table>{loading ? <div className="process-empty"><strong>Carregando processos…</strong></div> : !loadError && filtered.length === 0 && <div className="process-empty"><span><SearchIcon/></span><strong>{processes.length ? "Nenhum processo encontrado" : "Nenhum processo cadastrado"}</strong><p>{processes.length ? "Altere a busca ou os filtros para consultar outros processos." : activeEnterprises.length ? "Cadastre o primeiro processo vinculado a um empreendimento do PostgreSQL." : "Cadastre um empreendimento para começar."}</p>{processes.length > 0 && <button onClick={() => { setSearch(""); setClientFilter("all"); setEnterpriseFilter("all"); setTypeFilter("all"); setStatusFilter("all"); setPriorityFilter("all"); }}>Limpar filtros</button>}</div>}</div>
+      <div className="process-list-footer"><span>Exibindo <strong>{filtered.length}</strong> de <strong>{processes.length}</strong> processos no PostgreSQL</span><span>Prazos são informados manualmente pelo usuário</span></div>
     </section>
-    {formState && <ProcessForm mode={formState.mode} enterprises={activeEnterprises} clientsById={clientsById} initial={formState.mode === "edit" ? formState.process : null} onClose={() => setFormState(null)} onSubmit={formState.mode === "create" ? saveNew : saveEdit}/>}
-    {selected && <ProcessDetails process={processes.find((item) => item.id === selected.id) ?? selected} enterprise={enterprisesById.get(selected.enterpriseId)} client={linkedClient(selected)} onClose={() => setSelected(null)} onEdit={() => openEdit(processes.find((item) => item.id === selected.id) ?? selected)}/>}
+    {formState && <ProcessForm mode={formState.mode} enterprises={activeEnterprises} clientsById={clientsById} initial={formState.mode === "edit" ? formState.process : null} saving={busy} onClose={() => setFormState(null)} onSubmit={formState.mode === "create" ? saveNew : saveEdit}/>}
+    {selected && <ProcessDetails process={processes.find((item) => item.id === selected.id) ?? selected} enterprise={enterprisesById.get(selected.enterpriseId)} client={linkedClient(selected)} busy={busy} error={operationError} onClose={() => setSelected(null)} onDelete={() => void remove(processes.find((item) => item.id === selected.id) ?? selected)} onEdit={() => openEdit(processes.find((item) => item.id === selected.id) ?? selected)}/>}
   </div>;
 }
 
@@ -126,7 +210,7 @@ function PageTitle({ onCreate }: { onCreate?: () => void }) {
   return <div className="page-heading processes-heading"><div><div className="eyebrow"><span className="live-dot"/> OPERAÇÃO E ACOMPANHAMENTO</div><h1>Processos</h1><p>Acompanhe protocolos, etapas e prazos da operação.</p></div>{onCreate && <button className="primary-button" onClick={onCreate}><PlusIcon/> Novo processo</button>}</div>;
 }
 function StatCard({ label, value, tone, icon }: { label: string; value: number; tone: string; icon?: ReactNode }) {
-  return <article className="process-stat-card"><span className={"process-stat-icon " + tone}>{icon ?? <i/>}</span><div><small>{label}</small><strong>{value}</strong><span>dados demonstrativos</span></div></article>;
+  return <article className="process-stat-card"><span className={"process-stat-icon " + tone}>{icon ?? <i/>}</span><div><small>{label}</small><strong>{value}</strong><span>registros persistidos</span></div></article>;
 }
 function FilterSelect({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: ReactNode }) {
   return <label className="process-filter"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{children}</select></label>;
@@ -146,21 +230,22 @@ function statusClass(status: ProcessStatus) {
   return "status-draft";
 }
 
-function ProcessForm({ mode, enterprises, clientsById, initial, onClose, onSubmit }: { mode: "create" | "edit"; enterprises: EnterpriseRecord[]; clientsById: Map<string, ClientRecord>; initial: ProcessRecord | null; onClose: () => void; onSubmit: (input: ProcessInput) => void }) {
+function ProcessForm({ mode, enterprises, clientsById, initial, saving, onClose, onSubmit }: { mode: "create" | "edit"; enterprises: EnterpriseRecord[]; clientsById: Map<string, ClientRecord>; initial: ProcessRecord | null; saving: boolean; onClose: () => void; onSubmit: (input: ProcessInput) => Promise<void> }) {
   const [form, setForm] = useState<ProcessInput>(initial ? { enterpriseId: initial.enterpriseId, name: initial.name, protocol: initial.protocol, processType: initial.processType, entity: initial.entity, description: initial.description, manager: initial.manager, startDate: initial.startDate, dueDate: initial.dueDate, priority: initial.priority, stage: initial.stage, status: initial.status } : { ...blankForm, enterpriseId: enterprises[0]?.id ?? "" });
   const [error, setError] = useState("");
   const chosenEnterprise = enterprises.find((enterprise) => enterprise.id === form.enterpriseId);
   const chosenClient = chosenEnterprise ? clientsById.get(chosenEnterprise.clientId) : undefined;
-  useEffect(() => { function key(event: KeyboardEvent) { if (event.key === "Escape") onClose(); } window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, [onClose]);
+  useEffect(() => { function key(event: KeyboardEvent) { if (event.key === "Escape" && !saving) onClose(); } window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, [onClose, saving]);
   function change<K extends keyof ProcessInput>(key: K, value: ProcessInput[K]) { setForm((current) => ({ ...current, [key]: value })); setError(""); }
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!enterprises.some((enterprise) => enterprise.id === form.enterpriseId)) { setError("Selecione um empreendimento vinculado a um cliente cadastrado."); return; }
     if (![form.name, form.manager, form.startDate, form.dueDate].every((value) => value.trim())) { setError("Preencha nome, responsável e as duas datas."); return; }
     if (form.dueDate < form.startDate) { setError("O prazo previsto deve ser igual ou posterior à data de início."); return; }
-    onSubmit({ ...form, name: form.name.trim(), protocol: form.protocol.trim(), entity: form.entity.trim(), description: form.description.trim(), manager: form.manager.trim() });
+    try { await onSubmit({ ...form, name: form.name.trim(), protocol: form.protocol.trim(), entity: form.entity.trim(), description: form.description.trim(), manager: form.manager.trim() }); }
+    catch (submitError) { setError(submitError instanceof Error ? submitError.message : "Não foi possível salvar o processo."); }
   }
-  return <div className="client-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="client-dialog process-dialog" role="dialog" aria-modal="true" aria-labelledby="process-form-title"><header className="client-dialog-header"><div><span className="dialog-eyebrow">ACOMPANHAMENTO DEMONSTRATIVO</span><h2 id="process-form-title">{mode === "create" ? "Novo processo" : "Editar processo"}</h2><p>Classificações e prazos são apenas informativos e preenchidos manualmente.</p></div><button type="button" className="client-close" onClick={onClose} aria-label="Fechar formulário"><CloseIcon/></button></header><form onSubmit={submit} noValidate><div className="client-form-body"><div className="process-form-grid">
+  return <div className="client-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}><section className="client-dialog process-dialog" role="dialog" aria-modal="true" aria-labelledby="process-form-title"><header className="client-dialog-header"><div><span className="dialog-eyebrow">CADASTRO DE PROCESSO</span><h2 id="process-form-title">{mode === "create" ? "Novo processo" : "Editar processo"}</h2><p>Dados, etapas e prazos serão persistidos pela API no PostgreSQL.</p></div><button type="button" className="client-close" onClick={onClose} disabled={saving} aria-label="Fechar formulário"><CloseIcon/></button></header><form onSubmit={(event) => void submit(event)} noValidate><div className="client-form-body"><div className="process-form-grid">
     <label className="field-wide">Nome do processo <b>*</b><input autoFocus maxLength={140} value={form.name} onChange={(event) => change("name", event.target.value)} placeholder="Ex.: Renovação de licença operacional"/></label>
     <label>Número de protocolo <span>(opcional)</span><input maxLength={80} value={form.protocol} onChange={(event) => change("protocol", event.target.value)} placeholder="Protocolo ou referência"/></label>
     <label>Tipo de processo <b>*</b><select value={form.processType} onChange={(event) => change("processType", event.target.value as ProcessType)}>{processTypes.map((type) => <option key={type}>{type}</option>)}</select><small className="process-field-note">Opções demonstrativas, sem classificação jurídica definitiva.</small></label>
@@ -174,20 +259,20 @@ function ProcessForm({ mode, enterprises, clientsById, initial, onClose, onSubmi
     <label>Etapa atual <b>*</b><select value={form.stage} onChange={(event) => change("stage", event.target.value as ProcessStage)}>{processStages.map((stage) => <option key={stage}>{stage}</option>)}</select></label>
     <label>Status <b>*</b><select value={form.status} onChange={(event) => change("status", event.target.value as ProcessStatus)}>{processStatuses.map((status) => <option key={status}>{status}</option>)}</select></label>
     <label className="field-wide">Objetivo ou descrição <textarea rows={3} maxLength={1000} value={form.description} onChange={(event) => change("description", event.target.value)} placeholder="Objetivo, contexto ou observações operacionais"/></label>
-  </div>{error && <p className="client-form-error" role="alert">{error}</p>}<p className="client-form-hint"><b>*</b> Campos obrigatórios · Prazos definidos manualmente</p></div><footer className="client-dialog-footer"><button type="button" className="client-cancel" onClick={onClose}>Cancelar</button><button type="submit" className="primary-button">{mode === "create" ? "Cadastrar processo" : "Salvar alterações"}</button></footer></form></section></div>;
+  </div>{error && <p className="client-form-error" role="alert">{error}</p>}<p className="client-form-hint"><b>*</b> Campos obrigatórios · Prazos definidos manualmente</p></div><footer className="client-dialog-footer"><button type="button" className="client-cancel" onClick={onClose} disabled={saving}>Cancelar</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Salvando…" : mode === "create" ? "Cadastrar processo" : "Salvar alterações"}</button></footer></form></section></div>;
 }
 
-function ProcessDetails({ process, enterprise, client, onClose, onEdit }: { process: ProcessRecord; enterprise?: EnterpriseRecord; client?: ClientRecord; onClose: () => void; onEdit: () => void }) {
-  useEffect(() => { function key(event: KeyboardEvent) { if (event.key === "Escape") onClose(); } window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, [onClose]);
+function ProcessDetails({ process, enterprise, client, busy, error, onClose, onEdit, onDelete }: { process: ProcessRecord; enterprise?: EnterpriseRecord; client?: ClientRecord; busy: boolean; error: string; onClose: () => void; onEdit: () => void; onDelete: () => void }) {
+  useEffect(() => { function key(event: KeyboardEvent) { if (event.key === "Escape" && !busy) onClose(); } window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, [onClose, busy]);
   const sortedHistory = [...process.history].sort((a, b) => a.date.localeCompare(b.date));
   const currentStageIndex = processStages.indexOf(process.stage);
-  return <div className="client-overlay client-details-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside className="client-drawer process-drawer" role="dialog" aria-modal="true" aria-labelledby="process-details-title"><header className="client-drawer-header"><button className="client-close" onClick={onClose} aria-label="Fechar detalhes"><CloseIcon/></button><span className="dialog-eyebrow">DETALHES DO PROCESSO</span><div className="process-detail-title"><h2 id="process-details-title">{process.name}</h2><StatusBadge status={process.status}/></div><p className="process-protocol-label">{process.protocol ? "Protocolo " + process.protocol : "Sem número de protocolo"}</p><div className="client-drawer-actions"><PriorityBadge priority={process.priority}/><button className="primary-button" onClick={onEdit}>Editar processo</button></div></header>
-    <div className="client-drawer-content"><section className="client-detail-section"><h3>Relacionamentos</h3><DetailRow label="Cliente" value={client?.name ?? "Cliente não encontrado"}/><DetailRow label="Empreendimento" value={enterprise?.name ?? "Empreendimento não encontrado"}/><DetailRow label="Tipo" value={process.processType}/><DetailRow label="Órgão" value={process.entity || "Não informado"}/><DetailRow label="Responsável" value={process.manager}/></section>
+  return <div className="client-overlay client-details-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}><aside className="client-drawer process-drawer" role="dialog" aria-modal="true" aria-labelledby="process-details-title"><header className="client-drawer-header"><button className="client-close" onClick={onClose} disabled={busy} aria-label="Fechar detalhes"><CloseIcon/></button><span className="dialog-eyebrow">DETALHES DO PROCESSO</span><div className="process-detail-title"><h2 id="process-details-title">{process.name}</h2><StatusBadge status={process.status}/></div><p className="process-protocol-label">{process.protocol ? "Protocolo " + process.protocol : "Sem número de protocolo"}</p><div className="client-drawer-actions"><PriorityBadge priority={process.priority}/><button className="primary-button" disabled={busy} onClick={onEdit}>Editar processo</button><button className="process-delete-button" disabled={busy} onClick={onDelete}>Excluir processo</button></div></header>
+    <div className="client-drawer-content">{error && <p className="client-form-error" role="alert">{error}</p>}<section className="client-detail-section"><h3>Relacionamentos</h3><DetailRow label="Cliente" value={client?.name ?? "Cliente não encontrado"}/><DetailRow label="Empreendimento" value={enterprise?.name ?? "Empreendimento não encontrado"}/><DetailRow label="Tipo" value={process.processType}/><DetailRow label="Órgão" value={process.entity || "Não informado"}/><DetailRow label="Responsável" value={process.manager}/></section>
       <section className="client-detail-section"><h3>Datas</h3><DetailRow label="Início" value={formatDate(process.startDate)}/><DetailRow label="Prazo previsto" value={formatDate(process.dueDate) + (isOverdue(process) ? " · Vencido" : "")}/></section>
       <section className="client-detail-section"><h3>Etapas</h3><ol className="process-stage-timeline">{processStages.map((stage, index) => <li key={stage} className={index < currentStageIndex ? "stage-done" : index === currentStageIndex ? "stage-current" : ""}><span className="stage-marker">{index < currentStageIndex ? "✓" : index + 1}</span><span>{stage}</span>{index === currentStageIndex && <small>Atual</small>}</li>)}</ol></section>
       <section className="client-detail-section"><h3>Objetivo ou descrição</h3><p className="client-detail-text">{process.description || "Nenhuma descrição cadastrada."}</p></section>
-      <section className="client-detail-section"><h3>Histórico demonstrativo</h3><ol className="process-history">{sortedHistory.map((entry) => <HistoryItem key={entry.id} entry={entry}/>)}</ol></section>
-      <div className="client-detail-demo-note"><span className="demo-dot"/> Processo e histórico demonstrativos, armazenados neste navegador.</div>
+      <section className="client-detail-section"><h3>Histórico</h3><ol className="process-history">{sortedHistory.map((entry) => <HistoryItem key={entry.id} entry={entry}/>)}</ol></section>
+      <div className="client-detail-demo-note"><span className="live-dot"/> Processo e histórico carregados da API e persistidos no PostgreSQL.</div>
     </div></aside></div>;
 }
 function DetailRow({ label, value }: { label: string; value: string }) { return <div className="client-detail-row"><span>{label}</span><strong>{value}</strong></div>; }

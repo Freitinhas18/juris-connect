@@ -1,12 +1,18 @@
-import { useMemo, useState } from "react";
-import { demoActivities, demoCases, demoMetrics, demoUpcoming, navigation, type ModuleKey } from "./demoData";
-import ClientsPage from "./clients/ClientsPage";
-import EnterprisesPage from "./enterprises/EnterprisesPage";
-import ProcessesPage from "./processes/ProcessesPage";
-import TasksPage from "./tasks/TasksPage";
-import ObligationsPage from "./obligations/ObligationsPage";
-import DocumentsPage from "./documents/DocumentsPage";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { navigation, type ModuleKey } from "./demoData";
+const ClientsPage = lazy(() => import("./clients/ClientsPage"));
+const EnterprisesPage = lazy(() => import("./enterprises/EnterprisesPage"));
+const ProcessesPage = lazy(() => import("./processes/ProcessesPage"));
+const TasksPage = lazy(() => import("./tasks/TasksPage"));
+const ObligationsPage = lazy(() => import("./obligations/ObligationsPage"));
+const DocumentsPage = lazy(() => import("./documents/DocumentsPage"));
+const CommunicationPage = lazy(() => import("./communication/CommunicationPage"));
+const SettingsPage = lazy(() => import("./settings/SettingsPage"));
+import { loadDashboardData, type DashboardData } from "./dashboard/dashboardApi";
+import AuthPage from "./auth/AuthPage";
+import { changeActiveOrganization, getCurrentProfile, getOrganizations, signOut, type AuthOrganization, type AuthProfile } from "./auth/authApi";
 import "./styles.css";
+import "./redesign.css";
 
 type IconName = (typeof navigation)[number]["icon"] | "search" | "chevron" | "plus" | "arrow" | "more" | "bell" | "clock" | "spark" | "menu" | "calendar";
 
@@ -33,39 +39,144 @@ function App() {
   const [active, setActive] = useState<ModuleKey>("dashboard");
   const [query, setQuery] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const filteredCases = useMemo(() => demoCases.filter((item) => `${item.number} ${item.subject} ${item.client}`.toLowerCase().includes(query.toLowerCase())), [query]);
+  const dashboardSearchRef = useRef<HTMLInputElement>(null);
+  const [profile, setProfile] = useState<AuthProfile | null>(null);
+  const [organizations, setOrganizations] = useState<AuthOrganization[]>([]);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+
+  const refreshProfile = useCallback(async () => {
+    setAuthError("");
+    const current = await getCurrentProfile();
+    setProfile(current);
+    if (current) {
+      const memberships = await getOrganizations();
+      setOrganizations(memberships);
+    } else setOrganizations([]);
+  }, []);
+
+  useEffect(() => {
+    void refreshProfile().catch((reason: unknown) => setAuthError(reason instanceof Error ? reason.message : "Não foi possível validar sua sessão.")).finally(() => setAuthLoading(false));
+  }, [refreshProfile]);
+
+  useEffect(() => {
+    const focusDashboardSearch = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      setActive("dashboard");
+      requestAnimationFrame(() => dashboardSearchRef.current?.focus());
+    };
+    window.addEventListener("keydown", focusDashboardSearch);
+    return () => window.removeEventListener("keydown", focusDashboardSearch);
+  }, []);
+
+  async function logout() {
+    try { await signOut(); } finally { setProfile(null); setOrganizations([]); }
+  }
+
+  async function selectOrganization(organizationId: string) {
+    try {
+      await changeActiveOrganization(organizationId);
+      await refreshProfile();
+      setActive("dashboard");
+    } catch (reason) { setAuthError(reason instanceof Error ? reason.message : "Não foi possível trocar de organização."); }
+  }
+
+  if (authLoading) return <main className="auth-loading" role="status">Validando sessão…</main>;
+  if (!profile) return <AuthPage onAuthenticated={refreshProfile}/>;
+
+  const initials = profile.user.name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "JC";
+  const roleLabel = profile.role === "owner" ? "Proprietário" : profile.role === "admin" ? "Administrador" : "Membro";
 
   return <div className="app-shell">
-    <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
-      <div className="brand"><div className="brand-mark"><span></span><span></span><span></span><span></span></div><span>juris<span className="brand-light">connect</span></span><button className="workspace-switch" aria-label="Selecionar espaço"><Icon name="chevron" size={15}/></button></div>
-      <button className="workspace-card"><div className="workspace-avatar">V</div><span><strong>Vértice Legal</strong><small>Plano profissional</small></span><Icon name="chevron" size={15}/></button>
+    <a className="skip-link" href="#main-content">Pular para o conteúdo</a>
+    <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`} aria-label="Barra lateral">
+      <div className="brand"><div className="brand-mark"><span></span><span></span><span></span><span></span></div><span>juris<span className="brand-light">connect</span></span></div>
+      {organizations.length > 1 ? <label className="workspace-card workspace-select"><div className="workspace-avatar">{profile.organization.name[0]?.toUpperCase() ?? "O"}</div><span><strong>Organização ativa</strong><select aria-label="Organização ativa" value={profile.organization.id} onChange={(event) => void selectOrganization(event.target.value)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></span></label> : <div className="workspace-card" aria-label={`Organização ${profile.organization.name}`}><div className="workspace-avatar">{profile.organization.name[0]?.toUpperCase() ?? "O"}</div><span><strong>{profile.organization.name}</strong><small>{roleLabel}</small></span></div>}
       <div className="nav-label">ESPAÇO DE TRABALHO</div>
-      <nav className="main-nav" aria-label="Navegação principal">{navigation.map((item) => <button key={item.key} className={`nav-item ${active === item.key ? "active" : ""}`} onClick={() => { setActive(item.key); setSidebarOpen(false); }}><Icon name={item.icon}/><span>{item.label}</span>{"badge" in item && <small className="nav-badge">{item.badge}</small>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="help-card"><div className="help-icon"><Icon name="spark" size={17}/></div><strong>Precisa de ajuda?</strong><p>Acesse nossa central de suporte e encontre respostas.</p><button>Visitar central <Icon name="arrow" size={14}/></button></div><button className="user-profile"><div className="avatar user-avatar">LM</div><span><strong>Lucas Martins</strong><small>Administrador</small></span><Icon name="more" size={18}/></button></div>
+      <nav className="main-nav" id="workspace-nav" aria-label="Navegação principal">{navigation.map((item) => <button type="button" key={item.key} className={`nav-item ${active === item.key ? "active" : ""}`} aria-current={active === item.key ? "page" : undefined} onClick={() => { setActive(item.key); setSidebarOpen(false); }}><Icon name={item.icon}/><span>{item.label}</span></button>)}</nav>
+      <div className="sidebar-bottom"><div className="help-card"><div className="help-icon"><Icon name="spark" size={17}/></div><strong>Precisa de ajuda?</strong><p>A central de suporte ainda não está disponível nesta versão.</p><span className="help-unavailable">Em desenvolvimento</span></div><button className="user-profile authenticated-profile" type="button" onClick={() => void logout()} aria-label={`Sair da conta ${profile.user.name}`}><div className="avatar user-avatar">{initials}</div><span><strong>{profile.user.name}</strong><small>{roleLabel} · Sair</small></span></button></div>
     </aside>
-    <main className="main-area">
-      <header className="topbar"><div className="mobile-brand"><button className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Abrir menu"><Icon name="menu"/></button><div className="brand-mark"><span></span><span></span><span></span><span></span></div></div><div className="breadcrumbs"><span>Workspace</span><Icon name="chevron" size={14}/><strong>{pageTitles[active]}</strong></div><div className="topbar-actions"><label className="search-box"><Icon name="search" size={17}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar processos, clientes..."/><kbd>⌘ K</kbd></label><button className="icon-button notification" aria-label="Notificações"><Icon name="bell"/><i/></button><div className="avatar top-avatar">LM</div></div></header>
-      {active === "dashboard" ? <Dashboard cases={filteredCases} setActive={setActive}/> : active === "clients" ? <ClientsPage/> : active === "developments" ? <EnterprisesPage onOpenClients={() => setActive("clients")}/> : active === "cases" ? <ProcessesPage onOpenEnterprises={() => setActive("developments")}/> : active === "tasks" ? <TasksPage onOpenProcesses={() => setActive("cases")}/> : active === "conditions" ? <ObligationsPage onOpenProcesses={() => setActive("cases")}/> : active === "documents" ? <DocumentsPage/> : <ModulePlaceholder title={pageTitles[active]} module={active}/>}
+    <main className="main-area" id="main-content" tabIndex={-1}>
+      <header className="topbar"><div className="mobile-brand"><button type="button" className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label={sidebarOpen ? "Fechar menu" : "Abrir menu"} aria-expanded={sidebarOpen} aria-controls="workspace-nav"><Icon name="menu"/></button><div className="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div></div><div className="breadcrumbs" aria-label="Localização"><span>{profile.organization.name}</span><Icon name="chevron" size={14}/><strong>{pageTitles[active]}</strong></div><div className="topbar-actions">{active === "dashboard" && <label className="search-box"><Icon name="search" size={17}/><input ref={dashboardSearchRef} aria-label="Filtrar processos no painel" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filtrar processos..."/><kbd aria-hidden="true">Ctrl/⌘ K</kbd></label>}<button type="button" className="icon-button notification" aria-label="Notificações indisponíveis nesta versão" title="Notificações em desenvolvimento" disabled><Icon name="bell"/></button><div className="avatar top-avatar" aria-label={`Perfil de ${profile.user.name}`} title={profile.user.name}>{initials}</div></div></header>
+      {authError && <div className="auth-inline-error" role="alert">{authError}</div>}
+      <Suspense fallback={<section className="module-loading" role="status" aria-live="polite"><span className="loading-indicator" aria-hidden="true"/>Carregando {pageTitles[active].toLocaleLowerCase("pt-BR")}…</section>}>
+        {active === "dashboard" ? <Dashboard query={query} setActive={setActive}/> : active === "clients" ? <ClientsPage/> : active === "developments" ? <EnterprisesPage onOpenClients={() => setActive("clients")}/> : active === "cases" ? <ProcessesPage onOpenEnterprises={() => setActive("developments")}/> : active === "tasks" ? <TasksPage onOpenProcesses={() => setActive("cases")}/> : active === "conditions" ? <ObligationsPage onOpenProcesses={() => setActive("cases")}/> : active === "documents" ? <DocumentsPage/> : active === "communication" ? <CommunicationPage userId={profile.user.id}/> : <SettingsPage key={profile.organization.id} userId={profile.user.id} role={profile.role}/>}
+      </Suspense>
     </main>
     {sidebarOpen && <button className="scrim" aria-label="Fechar menu" onClick={() => setSidebarOpen(false)}/>}
   </div>;
 }
 
-function Dashboard({ cases, setActive }: { cases: typeof demoCases[number][]; setActive: (key: ModuleKey) => void }) {
-  return <div className="page-content"><div className="page-heading"><div><div className="eyebrow"><span className="live-dot"/> QUARTA-FEIRA, 12 DE NOVEMBRO DE 2026</div><h1>Bom dia, Lucas <span className="wave">✦</span></h1><p>Aqui está o resumo da sua operação jurídica.</p></div><button className="primary-button" onClick={() => setActive("cases")}><Icon name="plus" size={17}/> Novo processo</button></div>
-    <div className="demo-notice"><span className="demo-dot"/> Painel de demonstração <span>·</span> Os dados exibidos são ilustrativos e não representam registros persistidos.</div>
-    <section className="metric-grid" aria-label="Indicadores demonstrativos">{demoMetrics.map((metric) => <article className="metric-card" key={metric.label}><div className="metric-top"><span>{metric.label}</span><div className={`metric-icon ${metric.tone}`}><Icon name={metric.icon} size={17}/></div></div><div className="metric-value">{metric.value}</div><div className="metric-foot"><span className={`metric-change ${metric.tone}`}>{metric.change}</span><span>{metric.note}</span></div><div className={`metric-spark ${metric.tone}`}><svg viewBox="0 0 110 30" preserveAspectRatio="none"><path d="M0 23 C12 21 14 14 26 18 S43 24 52 13 S67 18 77 9 S94 12 110 3"/></svg></div></article>)}</section>
-    <div className="dashboard-grid"><section className="panel cases-panel"><div className="panel-heading"><div><h2>Processos em destaque</h2><p>Acompanhe os casos que precisam de atenção.</p></div><button className="text-button" onClick={() => setActive("cases")}>Ver todos <Icon name="chevron" size={15}/></button></div><div className="table-wrap"><table><thead><tr><th>PROCESSO</th><th>CLIENTE</th><th>ÁREA</th><th>PRÓXIMO PRAZO</th><th>PRIORIDADE</th><th/></tr></thead><tbody>{cases.map((item) => <tr key={item.number}><td><div className="case-name">{item.subject}<small>{item.number}</small></div></td><td><div className="client-cell"><span className={`client-avatar ${item.color}`}>{item.initials}</span>{item.client}</div></td><td><span className="area-pill">{item.area}</span></td><td><span className={item.priority === "Urgente" ? "deadline urgent" : "deadline"}>{item.priority === "Urgente" && <i/>}{item.deadline}</span></td><td><span className={`priority priority-${item.priority.toLowerCase()}`}><i/>{item.priority}</span></td><td><button className="row-more" aria-label="Mais opções"><Icon name="more" size={17}/></button></td></tr>)}</tbody></table>{cases.length === 0 && <div className="empty-state">Nenhum resultado para “{""}”.</div>}</div><div className="table-footer"><span>Exibindo <strong>{cases.length}</strong> itens demonstrativos</span><button onClick={() => setActive("cases")}>Abrir gestão de processos <Icon name="arrow" size={14}/></button></div></section>
-      <section className="panel deadlines-panel"><div className="panel-heading"><div><h2>Próximos prazos</h2><p>Fique à frente dos compromissos.</p></div><button className="icon-button subtle" aria-label="Mais opções"><Icon name="more"/></button></div><div className="upcoming-list">{demoUpcoming.map((item) => <div className="upcoming-item" key={item.title}><div className={`date-tile ${item.tone}`}><strong>{item.day}</strong><small>{item.month}</small></div><div className="upcoming-copy"><strong>{item.title}</strong><span>{item.detail}</span></div><Icon name="chevron" size={16}/></div>)}</div><button className="calendar-link" onClick={() => setActive("tasks")}><Icon name="calendar" size={16}/> Ver agenda completa <Icon name="arrow" size={14}/></button></section>
-      <section className="panel activity-panel"><div className="panel-heading"><div><h2>Atividade recente</h2><p>O que está acontecendo no workspace.</p></div><button className="text-button">Ver atividades <Icon name="chevron" size={15}/></button></div><div className="activity-list">{demoActivities.map((activity, index) => <div className="activity-item" key={activity.name}><div className={`avatar activity-avatar ${activity.color}`}>{activity.initials}</div><div className="activity-copy"><p><strong>{activity.name}</strong> {activity.action} <b>{activity.target}</b></p><span><Icon name="clock" size={13}/>{activity.time}</span></div>{index < demoActivities.length - 1 && <i className="activity-line"/>}</div>)}</div></section>
-      <section className="focus-card"><div className="focus-orb orb-one"/><div className="focus-orb orb-two"/><div className="focus-content"><span className="focus-kicker"><Icon name="spark" size={14}/> VISÃO GERAL</span><h2>Uma operação jurídica<br/>mais clara e organizada.</h2><p>Centralize processos, prazos e equipes em um só lugar.</p><button onClick={() => setActive("cases")}>Explorar processos <Icon name="arrow" size={14}/></button></div><div className="focus-art"><div className="art-window"><div className="art-bar"><i/><i/><i/></div><div className="art-lines"><span/><span/><span/><span/></div><div className="art-card"><span className="art-check">✓</span><div><b>Prazo acompanhado</b><small>Atualizado agora</small></div></div></div></div></section></div>
-    <footer className="page-footer"><span>© 2026 Juris Connect</span><span>Ambiente demonstrativo <i/> Todos os dados são fictícios</span></footer>
+function Dashboard({ query, setActive }: { query: string; setActive: (key: ModuleKey) => void }) {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const refresh = useCallback(() => {
+    setLoading(true); setError("");
+    void loadDashboardData().then(setData).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Não foi possível carregar os dados do painel.")).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  const today = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).format(new Date()).toLocaleUpperCase("pt-BR");
+  const clientById = useMemo(() => new Map((data?.clients ?? []).map((client) => [client.id, client])), [data]);
+  const enterpriseById = useMemo(() => new Map((data?.enterprises ?? []).map((enterprise) => [enterprise.id, enterprise])), [data]);
+  const cases = useMemo(() => (data?.processes ?? []).filter((item) => `${item.protocol} ${item.name} ${item.entity}`.toLowerCase().includes(query.trim().toLowerCase())).map((item) => {
+    const enterprise = enterpriseById.get(item.enterpriseId); const client = enterprise ? clientById.get(enterprise.clientId) : undefined;
+    return { ...item, clientName: client?.name ?? "Cliente indisponível", area: item.processType, deadline: item.dueDate ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium" }).format(new Date(`${item.dueDate}T12:00:00`)) : "Sem prazo", color: "lavender" };
+  }).slice(0, 5), [data, enterpriseById, clientById, query]);
+  const dashboardMetrics = useMemo(() => {
+    if (!data) return [];
+    const todayDate = new Date(); todayDate.setHours(0, 0, 0, 0);
+    const monthAhead = new Date(todayDate); monthAhead.setDate(monthAhead.getDate() + 30);
+    const nearDue = data.obligations.flatMap((obligation) => obligation.occurrences).filter((occurrence) => {
+      const due = new Date(`${occurrence.dueDate}T00:00:00`);
+      return occurrence.status !== "Cumprida" && occurrence.status !== "Dispensada" && due >= todayDate && due <= monthAhead;
+    }).length;
+    const activeProcesses = data.processes.filter((item) => !["Concluído", "Suspenso", "Cancelado"].includes(item.status)).length;
+    const openTasks = data.tasks.filter((item) => !["Concluída", "Cancelada"].includes(item.status)).length;
+    return [
+      { label: "Total de clientes", value: data.clients.length, note: "cadastros na API", icon: "users", tone: "violet" },
+      { label: "Empreendimentos cadastrados", value: data.enterprises.length, note: "registros na API", icon: "building", tone: "blue" },
+      { label: "Processos ativos", value: activeProcesses, note: "não concluídos ou suspensos", icon: "briefcase", tone: "green" },
+      { label: "Tarefas pendentes", value: openTasks, note: "em aberto", icon: "check", tone: "blue" },
+      { label: "Condicionantes próximas do vencimento", value: nearDue, note: "vencimento nos próximos 30 dias", icon: "calendar", tone: "amber" },
+      { label: "Documentos cadastrados", value: data.documents.length, note: "arquivos na API", icon: "file", tone: "violet" },
+    ];
+  }, [data]);
+  const upcoming = useMemo(() => {
+    if (!data) return [];
+    const entries: Array<{ date: string; title: string; detail: string }> = [];
+    for (const item of data.processes) if (item.dueDate && !["Concluído", "Cancelado"].includes(item.status)) entries.push({ date: item.dueDate, title: item.name, detail: `Processo · ${enterpriseById.get(item.enterpriseId)?.name ?? "Empreendimento"}` });
+    for (const item of data.tasks) if (item.dueDate && !["Concluída", "Cancelada"].includes(item.status)) entries.push({ date: item.dueDate, title: item.title, detail: "Tarefa" });
+    for (const item of data.obligations) for (const occurrence of item.occurrences) if (occurrence.status !== "Cumprida" && occurrence.status !== "Dispensada") entries.push({ date: occurrence.dueDate, title: item.title, detail: `Condicionante · ${occurrence.referencePeriod}` });
+    const todayIso = new Date().toISOString().slice(0, 10); const limit = new Date(); limit.setDate(limit.getDate() + 30); const limitIso = limit.toISOString().slice(0, 10);
+    return entries.filter((item) => item.date >= todayIso && item.date <= limitIso).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
+  }, [data, enterpriseById]);
+  const activities = useMemo(() => {
+    if (!data) return [];
+    return [
+      ...data.processes.flatMap((process) => process.history.map((item) => ({ id: `process-${process.id}-${item.id}`, date: item.date, text: `${item.message} · ${process.name}` }))),
+      ...data.tasks.flatMap((task) => task.history.map((item) => ({ id: `task-${task.id}-${item.id}`, date: item.date, text: `${item.message} · ${task.title}` }))),
+      ...data.obligations.flatMap((obligation) => obligation.history.map((item) => ({ id: `obligation-${obligation.id}-${item.id}`, date: item.date, text: `${item.message} · ${obligation.title}` }))),
+      ...data.documents.flatMap((document) => document.history.map((item) => ({ id: `document-${document.id}-${item.id}`, date: item.date, text: `${item.message} · ${document.name}` }))),
+    ].filter((item) => Number.isFinite(Date.parse(item.date))).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+  }, [data]);
+  const formatRelative = (date: string) => {
+    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(date)) / 60000));
+    return minutes < 60 ? `há ${minutes} min` : minutes < 1440 ? `há ${Math.floor(minutes / 60)} h` : new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(new Date(date));
+  };
+  const formatDate = (date: string) => new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(new Date(`${date}T12:00:00`));
+  return <div className="page-content"><div className="page-heading"><div><div className="eyebrow"><span className="live-dot"/> {today}</div><h1>Visão geral</h1><p>Resumo dos registros conectados ao Juris Connect.</p></div><button className="primary-button" onClick={() => setActive("cases")}><Icon name="plus" size={17}/> Novo processo</button></div>
+    <div className="demo-notice"><span className="demo-dot"/> Dados do backend <span>·</span> Indicadores derivados das listas da API; sem registros demonstrativos fixos nesta tela.</div>
+    {error && <div className="dashboard-error" role="alert"><strong>Não foi possível atualizar o painel</strong><span>{error}</span><button type="button" onClick={refresh}>Tentar novamente</button></div>}
+    <section className="metric-grid" aria-label="Indicadores reais">{loading && !data ? Array.from({ length: 6 }, (_, index) => <article className="metric-card metric-loading" key={index} aria-label="Carregando indicador"><span/></article>) : dashboardMetrics.map((metric) => <article className="metric-card" key={metric.label}><div className="metric-top"><span>{metric.label}</span><div className={`metric-icon ${metric.tone}`}><Icon name={metric.icon as IconName} size={17}/></div></div><div className="metric-value">{metric.value}</div><div className="metric-foot"><span>{metric.note}</span></div></article>)}</section>
+    {data && dashboardMetrics.every((item) => item.value === 0) && <div className="dashboard-empty">Nenhum registro cadastrado ainda. Os indicadores serão preenchidos conforme os módulos forem utilizados.</div>}
+    <div className="dashboard-grid"><section className="panel cases-panel"><div className="panel-heading"><div><h2>Processos em destaque</h2><p>Processos reais cadastrados no backend.</p></div><button className="text-button" onClick={() => setActive("cases")}>Ver todos <Icon name="chevron" size={15}/></button></div><div className="table-wrap"><table><thead><tr><th>PROCESSO</th><th>CLIENTE</th><th>ÁREA</th><th>PRAZO</th><th>STATUS</th></tr></thead><tbody>{cases.map((item) => <tr key={item.id}><td><div className="case-name">{item.name}<small>{item.protocol || "Sem protocolo"}</small></div></td><td>{item.clientName}</td><td><span className="area-pill">{item.area}</span></td><td><span className="deadline">{item.deadline}</span></td><td><span className="priority">{item.status}</span></td></tr>)}</tbody></table>{loading && !data ? <div className="empty-state">Carregando processos…</div> : !error && cases.length === 0 ? <div className="empty-state">{query ? "Nenhum processo corresponde à pesquisa." : "Nenhum processo cadastrado."}</div> : null}</div><div className="table-footer"><span>{data ? `${cases.length} processo(s) exibido(s)` : "Dados carregados da API"}</span><button onClick={() => setActive("cases")}>Abrir processos <Icon name="arrow" size={14}/></button></div></section>
+      <section className="panel deadlines-panel"><div className="panel-heading"><div><h2>Próximos prazos</h2><p>Registros em aberto com vencimento em até 30 dias.</p></div></div><div className="upcoming-list">{upcoming.map((item) => <div className="upcoming-item" key={`${item.date}-${item.title}`}><div className="date-tile violet"><strong>{formatDate(item.date).split(" ")[0]}</strong><small>{formatDate(item.date).split(" ")[1]?.toUpperCase()}</small></div><div className="upcoming-copy"><strong>{item.title}</strong><span>{item.detail}</span></div><span className="deadline">{formatDate(item.date)}</span></div>)}{data && !loading && upcoming.length === 0 && <div className="empty-state">Nenhum prazo próximo cadastrado.</div>}</div><button className="calendar-link" onClick={() => setActive("tasks")}><Icon name="calendar" size={16}/> Abrir tarefas <Icon name="arrow" size={14}/></button></section>
+      <section className="panel activity-panel"><div className="panel-heading"><div><h2>Atividade recente</h2><p>Eventos registrados nos históricos dos módulos.</p></div></div><div className="activity-list">{activities.map((activity) => <div className="activity-item" key={activity.id}><div className="avatar activity-avatar lavender">JC</div><div className="activity-copy"><p>{activity.text}</p><span><Icon name="clock" size={13}/>{formatRelative(activity.date)}</span></div></div>)}{data && !loading && activities.length === 0 && <div className="empty-state">Ainda não há atividades registradas.</div>}</div></section>
+      <section className="focus-card"><div className="focus-orb orb-one"/><div className="focus-orb orb-two"/><div className="focus-content"><span className="focus-kicker"><Icon name="spark" size={14}/> JURIS CONNECT</span><h2>Uma operação jurídica<br/>mais clara e organizada.</h2><p>Resumo atualizado a partir dos registros existentes.</p><button onClick={() => setActive("cases")}>Explorar processos <Icon name="arrow" size={14}/></button></div><div className="focus-art"><div className="art-window"><div className="art-bar"><i/><i/><i/></div><div className="art-lines"><span/><span/><span/><span/></div><div className="art-card"><span className="art-check">✓</span><div><b>Visão consolidada</b><small>Dados da API</small></div></div></div></div></section></div>
+    <footer className="page-footer"><span>© {new Date().getFullYear()} Juris Connect</span><span>Fonte: API e PostgreSQL</span></footer>
   </div>;
-}
-
-function ModulePlaceholder({ title, module }: { title: string; module: ModuleKey }) {
-  const navItem = navigation.find((item) => item.key === module);
-  return <div className="page-content module-page"><div className="page-heading"><div><div className="eyebrow">WORKSPACE / {title.toUpperCase()}</div><h1>{title}</h1><p>Organize e acompanhe {title.toLowerCase()} em um só lugar.</p></div><button className="primary-button"><Icon name="plus" size={17}/> Novo {module === "clients" ? "cliente" : module === "cases" ? "processo" : title.toLowerCase()}</button></div><div className="demo-notice"><span className="demo-dot"/> Módulo demonstrativo <span>·</span> Estrutura inicial para validação visual.</div><section className="module-welcome"><div className="module-icon"><Icon name={navItem?.icon ?? "grid"} size={24}/></div><h2>Seu espaço de {title.toLowerCase()}</h2><p>Esta área está pronta para receber os fluxos de {title.toLowerCase()}. Os dados e ações serão conectados às fontes apropriadas nas próximas etapas.</p><div className="module-placeholder-row"><span><i/> Visão organizada</span><span><i/> Acompanhamento centralizado</span><span><i/> Atualizações em um só lugar</span></div></section></div>;
 }
 
 export default App;

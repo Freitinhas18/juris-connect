@@ -1,22 +1,6 @@
-import type { ClientStatus } from "../clients/clientTypes";
+import type { EnterpriseInput as SharedEnterpriseInput, ClientStatus } from "@juris-connect/shared";
 
 export type EnterpriseStatus = ClientStatus;
-
-export type EnterpriseRecord = {
-  id: string;
-  clientId: string;
-  name: string;
-  type: string;
-  activity: string;
-  document: string;
-  address: string;
-  municipality: string;
-  state: string;
-  manager: string;
-  description: string;
-  status: EnterpriseStatus;
-  relatedCases: number;
-  createdAt: string;
-};
-
-export type EnterpriseInput = Omit<EnterpriseRecord, "id" | "createdAt">;
+export type EnterpriseInput = SharedEnterpriseInput;
+export type EnterpriseCreateInput = EnterpriseInput & { createdAt?: string };
+export type EnterpriseRecord = EnterpriseInput & { id: string; createdAt: string; updatedAt?: string };

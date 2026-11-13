@@ -6,12 +6,17 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "test:safe": "powershell -NoProfile -ExecutionPolicy Bypass -File ./test/run-safe.ps1",
+    "test:browser:safe": "powershell -NoProfile -ExecutionPolicy Bypass -File ./test/run-browser-safe.ps1",
+    "demo:seed:test": "powershell -NoProfile -ExecutionPolicy Bypass -File ./test/seed-demo-test.ps1",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
+    "@fastify/multipart": "^10.1.8",
     "@juris-connect/shared": "workspace:*",
     "dotenv": "^18.0.10",
     "drizzle-orm": "^0.45.4",

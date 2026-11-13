@@ -1,7 +1,11 @@
 import { demoTasks } from "./taskDemoData";
+import { demoProcesses } from "../processes/processDemoData";
+import type { ProcessRecord } from "../processes/processTypes";
 import type { ResponsibilityTransfer, TaskHistoryEntry, TaskInput, TaskRecord, TaskStatus, TaskSubtask, WaitPeriod } from "./taskTypes";
 
-const STORAGE_KEY = "juris-connect:demo-tasks:v1";
+export const LEGACY_TASKS_KEY = "juris-connect:demo-tasks:v1";
+const STORAGE_KEY = LEGACY_TASKS_KEY;
+const IMPORTED_TASKS_KEY = "juris-connect:demo-tasks:migration:v1";
 export const DEMO_ACTOR_ID = "demo-team-lucas";
 const waitingStatuses: TaskStatus[] = ["Aguardando cliente", "Aguardando órgão ou terceiro"];
 
@@ -44,6 +48,54 @@ function cloneDemoTasks(): TaskRecord[] {
     transfers: task.transfers.map((item) => ({ ...item })),
     waitPeriods: task.waitPeriods.map((item) => ({ ...item })),
   }));
+}
+
+export type LegacyTaskCandidate = { sourceId: string; task: TaskRecord; previousProcessName: string; processId: string };
+export type LegacyTaskInspection = { exists: boolean; invalidCount: number; unchangedDemoCount: number; candidates: LegacyTaskCandidate[]; parseError: boolean };
+
+function unchangedDemo(task: TaskRecord): boolean {
+  const original = demoTasks.find((item) => item.id === task.id);
+  return original !== undefined && JSON.stringify(task) === JSON.stringify(original);
+}
+function importedMap(): Record<string, string> {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(IMPORTED_TASKS_KEY) ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch { return {}; }
+}
+export function inspectLegacyTasks(processes: ProcessRecord[]): LegacyTaskInspection {
+  let raw: string | null;
+  try { raw = window.localStorage.getItem(LEGACY_TASKS_KEY); }
+  catch { return { exists: false, invalidCount: 0, unchangedDemoCount: 0, candidates: [], parseError: true }; }
+  if (raw === null) return { exists: false, invalidCount: 0, unchangedDemoCount: 0, candidates: [], parseError: false };
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch { return { exists: true, invalidCount: 1, unchangedDemoCount: 0, candidates: [], parseError: true }; }
+  if (!Array.isArray(parsed)) return { exists: true, invalidCount: 1, unchangedDemoCount: 0, candidates: [], parseError: true };
+  const done = importedMap();
+  const candidates: LegacyTaskCandidate[] = [];
+  let invalidCount = 0;
+  let unchangedDemoCount = 0;
+  for (const value of parsed) {
+    if (!validTask(value)) { invalidCount++; continue; }
+    if (unchangedDemo(value)) { unchangedDemoCount++; continue; }
+    if (done[value.id]) continue;
+    const demoProcess = demoProcesses.find((item) => item.id === value.processId);
+    const previousProcessName = demoProcess?.name ?? "";
+    const matchingProcess = processes.find((item) => item.id === value.processId) ?? (previousProcessName
+      ? processes.find((item) => item.name.trim().toLocaleLowerCase("pt-BR") === previousProcessName.trim().toLocaleLowerCase("pt-BR"))
+      : undefined);
+    candidates.push({ sourceId: value.id, task: value, previousProcessName, processId: matchingProcess?.id ?? "" });
+  }
+  return { exists: true, invalidCount, unchangedDemoCount, candidates, parseError: false };
+}
+export function markLegacyTaskImported(sourceId: string, destinationId: string): void {
+  window.localStorage.setItem(IMPORTED_TASKS_KEY, JSON.stringify({ ...importedMap(), [sourceId]: destinationId }));
+}
+export function getLegacyTaskBackup(): string | null {
+  try { return window.localStorage.getItem(LEGACY_TASKS_KEY); }
+  catch { return null; }
 }
 export function getTasks(): TaskRecord[] {
   try {

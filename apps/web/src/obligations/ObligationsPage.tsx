@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { getProcesses } from "../processes/processRepository";
+import { listProcesses } from "../processes/processApi";
 import type { ProcessRecord } from "../processes/processTypes";
-import { getEnterprises } from "../enterprises/enterpriseRepository";
+import { listEnterprises } from "../enterprises/enterpriseApi";
 import type { EnterpriseRecord } from "../enterprises/enterpriseTypes";
-import { getClients } from "../clients/clientRepository";
+import { listClients } from "../clients/clientApi";
 import type { ClientRecord } from "../clients/clientTypes";
 import { demoTeam } from "../tasks/teamDemoData";
 import type { TeamMember } from "../tasks/taskTypes";
-import { addOccurrenceEvidence, calculateNextDueDate, createObligation, generateNextOccurrence, getObligations, updateObligation, updateOccurrence } from "./obligationRepository";
+import { calculateNextDueDate } from "./obligationRepository";
+import { addOccurrenceEvidence as addEvidenceRequest, archiveObligation, createObligation as createObligationRequest, generateOccurrence, listObligations, updateObligation as updateObligationRequest, updateOccurrence as updateOccurrenceRequest } from "./obligationApi";
 import { occurrenceStatuses, periodicities } from "./obligationTypes";
 import type { ObligationEvidence, ObligationInput, ObligationOccurrence, ObligationRecord, OccurrenceInput, OccurrenceStatus, Periodicity } from "./obligationTypes";
+import { inspectLegacyObligations, markLegacyObligationImported, preserveLegacyBackup, type LegacyObligation } from "./obligationLegacy";
 import "./obligations.css";
 
 type View = "list" | "calendar";
@@ -45,10 +47,18 @@ function nextScheduledDate(obligation: ObligationRecord): string | null {
 }
 
 export default function ObligationsPage({ onOpenProcesses }: { onOpenProcesses: () => void }) {
-  const [processes] = useState<ProcessRecord[]>(getProcesses);
-  const [enterprises] = useState<EnterpriseRecord[]>(getEnterprises);
-  const [clients] = useState<ClientRecord[]>(getClients);
-  const [records, setRecords] = useState<ObligationRecord[]>(getObligations);
+  const [processes, setProcesses] = useState<ProcessRecord[]>([]);
+  const [enterprises, setEnterprises] = useState<EnterpriseRecord[]>([]);
+  const [clients, setClients] = useState<ClientRecord[]>([]);
+  const [records, setRecords] = useState<ObligationRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [operationError, setOperationError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [legacyItems, setLegacyItems] = useState<LegacyObligation[]>([]);
+  const [legacyMappings, setLegacyMappings] = useState<Record<string, string>>({});
+  const [legacyError, setLegacyError] = useState("");
+  const [legacyNotice, setLegacyNotice] = useState("");
   const [search, setSearch] = useState("");
   const [clientFilter, setClientFilter] = useState<Filter>("all");
   const [enterpriseFilter, setEnterpriseFilter] = useState<Filter>("all");
@@ -61,6 +71,37 @@ export default function ObligationsPage({ onOpenProcesses }: { onOpenProcesses: 
   const [selected, setSelected] = useState<ObligationRecord | null>(null);
   const [evidenceTarget, setEvidenceTarget] = useState<{ obligation: ObligationRecord; occurrence: ObligationOccurrence } | null>(null);
   const [notice, setNotice] = useState("");
+
+  async function load() {
+    setLoading(true); setLoadError("");
+    const legacyInspection = inspectLegacyObligations();
+    setLegacyItems(legacyInspection.candidates);
+    setLegacyMappings(Object.fromEntries(legacyInspection.candidates.map((item) => [item.id, ""])));
+    setLegacyError(legacyInspection.error);
+    const results = await Promise.allSettled([listClients(), listEnterprises(), listProcesses(), listObligations()]);
+    const [clientResult, enterpriseResult, processResult, obligationResult] = results;
+    if (clientResult.status === "fulfilled") setClients(clientResult.value);
+    if (enterpriseResult.status === "fulfilled") setEnterprises(enterpriseResult.value);
+    if (processResult.status === "fulfilled") setProcesses(processResult.value);
+    if (obligationResult.status === "fulfilled") setRecords(obligationResult.value);
+    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason instanceof Error ? result.reason.message : "Falha ao consultar API"] : []);
+    if (errors.length) setLoadError(errors.join(" "));
+    setLoading(false);
+  }
+  useEffect(() => { void load(); }, []);
+  async function importLegacy(item: LegacyObligation) {
+    const processId = legacyMappings[item.id];
+    if (!processId) { setLegacyError("Selecione um processo real para cada registro legado antes de importar."); return; }
+    setBusy(true); setLegacyError("");
+    try {
+      preserveLegacyBackup();
+      const occurrences = item.occurrences.map(({ id: _id, obligationId: _obligationId, evidence, ...occurrence }) => ({ ...occurrence, evidence: evidence.map(({ id: _evidenceId, ...entry }) => entry) }));
+      const imported = await createObligationRequest({ title: item.title, description: item.description, processId, reference: item.reference, authority: item.authority, responsibleId: item.responsibleId, periodicity: item.periodicity, firstDueDate: item.firstDueDate, requirements: item.requirements, expectedEvidence: item.expectedEvidence, status: item.status, createdAt: item.createdAt, history: item.history, occurrences });
+      markLegacyObligationImported(item.id);
+      setRecords((current) => [imported, ...current]); setLegacyItems((current) => current.filter((candidate) => candidate.id !== item.id)); setLegacyNotice(`“${item.title}” foi importada. A cópia original permanece no navegador.`);
+    } catch (error) { setLegacyError(error instanceof Error ? error.message : "Não foi possível importar este registro."); }
+    finally { setBusy(false); }
+  }
 
   const processById = useMemo(() => new Map(processes.map((process) => [process.id, process])), [processes]);
   const enterpriseById = useMemo(() => new Map(enterprises.map((enterprise) => [enterprise.id, enterprise])), [enterprises]);
@@ -104,38 +145,37 @@ export default function ObligationsPage({ onOpenProcesses }: { onOpenProcesses: 
     }).sort((a, b) => (nextScheduledDate(a) ?? "9999-99-99").localeCompare(nextScheduledDate(b) ?? "9999-99-99"));
   }, [records, search, clientFilter, enterpriseFilter, responsibleFilter, periodicityFilter, situationFilter, processById, enterpriseById, clientById]);
 
-  function saveNew(input: ObligationInput) { setRecords((current) => createObligation(input, current)); setDialog(null); setNotice("Condicionante e primeira ocorrência cadastradas."); }
-  function saveEdit(input: ObligationInput) {
+  async function saveNew(input: ObligationInput) { setBusy(true); setOperationError(""); try { const created = await createObligationRequest(input); setRecords((current) => [created, ...current]); setDialog(null); setNotice("Condicionante e primeira ocorrência salvas no PostgreSQL."); } catch (error) { setOperationError(error instanceof Error ? error.message : "Falha ao cadastrar."); } finally { setBusy(false); } }
+  async function saveEdit(input: ObligationInput) {
     if (dialog?.mode !== "edit") return;
-    const id = dialog.obligation.id;
-    setRecords((current) => updateObligation(id, input, current));
-    setDialog(null);
+    setBusy(true); setOperationError(""); try { const updated = await updateObligationRequest(dialog.obligation.id, input); setRecords((current) => current.map((item) => item.id === updated.id ? updated : item)); setSelected((current) => current?.id === updated.id ? updated : current); setDialog(null); } catch (error) { setOperationError(error instanceof Error ? error.message : "Falha ao salvar."); } finally { setBusy(false); }
   }
-  function patchRecords(id: string, transform: (current: ObligationRecord[]) => ObligationRecord[]) {
-    const next = transform(records);
-    setRecords(next);
-    setSelected((current) => current?.id === id ? next.find((item) => item.id === id) ?? current : current);
+  async function patchRecord(id: string, operation: () => Promise<ObligationRecord>) {
+    setBusy(true); setOperationError(""); try { const updated = await operation(); setRecords((current) => current.map((item) => item.id === id ? updated : item)); setSelected((current) => current?.id === id ? updated : current); return updated; } catch (error) { setOperationError(error instanceof Error ? error.message : "Falha ao atualizar o registro."); return null; } finally { setBusy(false); }
   }
-  function onGenerate(id: string) {
+  async function onGenerate(id: string) {
     const before = records.find((record) => record.id === id);
-    const priorCount = before?.occurrences.length ?? 0;
-    const next = generateNextOccurrence(id, records);
-    setRecords(next);
-    const after = next.find((record) => record.id === id);
-    if ((after?.occurrences.length ?? 0) > priorCount) {
-      setNotice("Nova ocorrência programada para " + dateLabel(after?.occurrences.at(-1)?.dueDate ?? "") + ".");
-      setSelected(after ?? null);
-    } else setNotice("Não foi criada uma nova ocorrência: a condicionante não é recorrente, está inativa ou o ciclo já existe.");
+    if (!before || before.status !== "active" || before.periodicity === "Pontual") return;
+    const latest = [...before.occurrences].sort((a, b) => b.dueDate.localeCompare(a.dueDate))[0];
+    const expected = calculateNextDueDate(latest?.dueDate ?? before.firstDueDate, before.periodicity);
+    const updated = await patchRecord(id, () => generateOccurrence(id));
+    if (updated) setNotice(updated.occurrences.length > before.occurrences.length ? "Nova ocorrência salva no PostgreSQL para " + dateLabel(expected ?? "") + "." : "O ciclo seguinte já possui ocorrência.");
   }
   function clearFilters() { setSearch(""); setClientFilter("all"); setEnterpriseFilter("all"); setResponsibleFilter("all"); setPeriodicityFilter("all"); setSituationFilter("all"); }
 
-  if (!availableProcesses.length) return <div className="page-content obligations-page"><PageTitle/><div className="demo-notice"><span className="demo-dot"/> Ambiente demonstrativo <span>·</span> Não há processos com vínculos válidos disponíveis.</div><EmptyDependencies onOpenProcesses={onOpenProcesses}/></div>;
+  if (loading) return <div className="page-content obligations-page"><PageTitle/><p className="obligation-api-state">Carregando condicionantes e vínculos do backend…</p></div>;
+  if (loadError && !records.length) return <div className="page-content obligations-page"><PageTitle/><div className="obligation-api-error" role="alert"><strong>API indisponível ou migration pendente</strong><p>{loadError}</p><button className="client-cancel" onClick={() => void load()}>Tentar novamente</button></div></div>;
+  if (!availableProcesses.length) return <div className="page-content obligations-page"><PageTitle/><div className="obligation-api-state">{loadError && <p role="alert">{loadError}</p>}<EmptyDependencies onOpenProcesses={onOpenProcesses}/></div></div>;
 
   return <div className="page-content obligations-page">
     <PageTitle onCreate={() => setDialog({ mode: "create" })}/>
-    <div className="demo-notice"><span className="demo-dot"/> Ambiente demonstrativo <span>·</span> Obrigações, ocorrências e evidências são registros locais fictícios.</div>
+    <div className="demo-notice"><span className="demo-dot"/> Persistência PostgreSQL <span>·</span> Responsáveis são identificadores demonstrativos; vencimentos são informados manualmente e não representam prazo legal.</div>
+    {legacyItems.length > 0 && <section className="obligation-legacy-panel"><strong>Dados locais encontrados</strong><p>{legacyItems.length} registro(s) personalizados permanecem no navegador. Eles só serão enviados após escolher um processo real. A importação cria uma cópia no PostgreSQL e mantém a origem local.</p>{legacyItems.map((item) => <div className="obligation-legacy-row" key={item.id}><span>{item.title}</span><select aria-label={`Processo real para ${item.title}`} value={legacyMappings[item.id] ?? ""} onChange={(event) => setLegacyMappings((current) => ({ ...current, [item.id]: event.target.value }))}><option value="">Vincular a processo…</option>{availableProcesses.map((process) => <option key={process.id} value={process.id}>{process.name}</option>)}</select><button disabled={busy || !legacyMappings[item.id]} onClick={() => void importLegacy(item)}>Importar</button></div>)}{legacyError && <p role="alert">{legacyError}</p>}</section>}
+    {legacyNotice && <div className="obligation-notice" role="status">{legacyNotice}<button onClick={() => setLegacyNotice("")} aria-label="Fechar aviso"><CloseIcon/></button></div>}
+    {loadError && <div className="obligation-api-error" role="alert">Alguns dados relacionados não puderam ser carregados: {loadError}</div>}
+    {operationError && <div className="obligation-api-error" role="alert">{operationError}<button onClick={() => setOperationError("")} aria-label="Fechar erro"><CloseIcon/></button></div>}
     {notice && <div className="obligation-notice" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Fechar aviso"><CloseIcon/></button></div>}
-    <section className="obligation-stat-grid" aria-label="Indicadores demonstrativos de condicionantes">
+    <section className="obligation-stat-grid" aria-label="Indicadores de condicionantes">
       <StatCard label="Condicionantes ativas" value={activeCount} tone="violet"/>
       <StatCard label="Ocorrências pendentes" value={pendingCount} tone="blue"/>
       <StatCard label="Cumpridas" value={completedCount} tone="green"/>
@@ -153,10 +193,10 @@ export default function ObligationsPage({ onOpenProcesses }: { onOpenProcesses: 
         <FilterSelect label="Situação" value={situationFilter} onChange={setSituationFilter}><option value="all">Todas</option><option value="active">Ativa</option><option value="inactive">Inativa</option>{occurrenceStatuses.map((status) => <option key={status}>{status}</option>)}</FilterSelect>
       </div>
       {view === "list" ? <ObligationTable records={filtered} contextFor={contextFor} memberById={memberById} onOpen={setSelected} onEdit={(record) => setDialog({ mode: "edit", obligation: record })} onClear={clearFilters}/> : <ObligationCalendar month={calendarMonth} setMonth={setCalendarMonth} items={calendarItems(filtered)} onOpen={(obligation) => setSelected(obligation)}/>}
-      <div className="obligation-panel-footer"><span>Exibindo <strong>{filtered.length}</strong> de <strong>{records.length}</strong> condicionantes demonstrativas</span><span>Sem interpretação automática de exigibilidade ou prazos legais</span></div>
+      <div className="obligation-panel-footer"><span>Exibindo <strong>{filtered.length}</strong> de <strong>{records.length}</strong> condicionantes do PostgreSQL</span><span>Sem interpretação automática de exigibilidade ou prazos legais</span></div>
     </section>
     {dialog && <ObligationForm mode={dialog.mode} processes={availableProcesses} memberById={memberById} initial={dialog.mode === "edit" ? dialog.obligation : null} onClose={() => setDialog(null)} onSubmit={dialog.mode === "create" ? saveNew : saveEdit}/>}
-    {selected && <ObligationDetails obligation={records.find((item) => item.id === selected.id) ?? selected} context={contextFor(records.find((item) => item.id === selected.id) ?? selected)} memberById={memberById} onClose={() => setSelected(null)} onEdit={() => { const item = records.find((record) => record.id === selected.id) ?? selected; setSelected(null); setDialog({ mode: "edit", obligation: item }); }} onGenerate={() => onGenerate(selected.id)} onOccurrenceChange={(occurrenceId, input) => patchRecords(selected.id, (current) => updateOccurrence(selected.id, occurrenceId, input, current))} onEvidence={(occurrence, evidence) => patchRecords(selected.id, (current) => addOccurrenceEvidence(selected.id, occurrence.id, evidence, current))}/>}
+    {selected && <ObligationDetails obligation={records.find((item) => item.id === selected.id) ?? selected} context={contextFor(records.find((item) => item.id === selected.id) ?? selected)} memberById={memberById} onClose={() => setSelected(null)} onEdit={() => { const item = records.find((record) => record.id === selected.id) ?? selected; setSelected(null); setDialog({ mode: "edit", obligation: item }); }} onGenerate={() => void onGenerate(selected.id)} onOccurrenceChange={(occurrenceId, input) => void patchRecord(selected.id, () => updateOccurrenceRequest(selected.id, occurrenceId, input))} onEvidence={async (occurrence, evidence) => Boolean(await patchRecord(selected.id, () => addEvidenceRequest(selected.id, occurrence.id, evidence)))} busy={busy} onArchive={() => void patchRecord(selected.id, () => archiveObligation(selected.id))}/>}
   </div>;
 }
 
@@ -169,7 +209,7 @@ function PageTitle({ onCreate }: { onCreate?: () => void }) {
   return <div className="page-heading obligations-heading"><div><div className="eyebrow"><span className="live-dot"/> CONFORMIDADE E ACOMPANHAMENTO</div><h1>Condicionantes</h1><p>Organize obrigações, ocorrências e evidências por período.</p></div>{onCreate && <button className="primary-button" onClick={onCreate}><PlusIcon/> Nova condicionante</button>}</div>;
 }
 function StatCard({ label, value, tone }: { label: string; value: number; tone: string }) {
-  return <article className="obligation-stat-card"><span className={"obligation-stat-icon " + tone}><i/></span><div><small>{label}</small><strong>{value}</strong><span>dados demonstrativos</span></div></article>;
+  return <article className="obligation-stat-card"><span className={"obligation-stat-icon " + tone}><i/></span><div><small>{label}</small><strong>{value}</strong><span>PostgreSQL</span></div></article>;
 }
 function FilterSelect({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: ReactNode }) {
   return <label className="obligation-filter"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{children}</select></label>;
@@ -245,7 +285,7 @@ function ObligationForm({ mode, processes, memberById, initial, onClose, onSubmi
     if (!form.title.trim() || !processes.some((process) => process.id === form.processId) || !memberById.has(form.responsibleId) || !form.firstDueDate) { setError("Preencha o título, processo, responsável e primeiro vencimento."); return; }
     onSubmit({ ...form, title: form.title.trim(), description: form.description.trim(), reference: form.reference.trim(), authority: form.authority.trim(), requirements: form.requirements.trim(), expectedEvidence: form.expectedEvidence.trim() });
   }
-  return <div className="client-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="client-dialog obligation-dialog" role="dialog" aria-modal="true" aria-labelledby="obligation-form-title"><header className="client-dialog-header"><div><span className="dialog-eyebrow">OBRIGAÇÃO DEMONSTRATIVA</span><h2 id="obligation-form-title">{mode === "create" ? "Nova condicionante" : "Editar condicionante"}</h2><p>Vencimentos são definidos manualmente e não representam prazo legal.</p></div><button type="button" className="client-close" onClick={onClose} aria-label="Fechar formulário"><CloseIcon/></button></header><form onSubmit={submit} noValidate><div className="client-form-body"><div className="obligation-form-grid">
+  return <div className="client-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="client-dialog obligation-dialog" role="dialog" aria-modal="true" aria-labelledby="obligation-form-title"><header className="client-dialog-header"><div><span className="dialog-eyebrow">CADASTRO DE OBRIGAÇÃO</span><h2 id="obligation-form-title">{mode === "create" ? "Nova condicionante" : "Editar condicionante"}</h2><p>Vencimentos são definidos manualmente e não representam prazo legal.</p></div><button type="button" className="client-close" onClick={onClose} aria-label="Fechar formulário"><CloseIcon/></button></header><form onSubmit={submit} noValidate><div className="client-form-body"><div className="obligation-form-grid">
     <label className="field-wide">Título da obrigação <b>*</b><input autoFocus maxLength={140} value={form.title} onChange={(event) => change("title", event.target.value)} placeholder="Ex.: Apresentar relatório de acompanhamento"/></label>
     <label className="field-wide">Processo vinculado <b>*</b><select value={form.processId} onChange={(event) => change("processId", event.target.value)}><option value="">Selecione um processo</option>{processes.map((process) => <option value={process.id} key={process.id}>{process.name}</option>)}</select><small className="obligation-form-note">Cliente e empreendimento serão derivados do processo.</small></label>
     <label>Referência da obrigação <span>(opcional)</span><input maxLength={140} value={form.reference} onChange={(event) => change("reference", event.target.value)} placeholder="Item, referência ou identificação"/></label>
@@ -257,7 +297,7 @@ function ObligationForm({ mode, processes, memberById, initial, onClose, onSubmi
     <label className="field-wide">Evidências esperadas <textarea rows={2} maxLength={800} value={form.expectedEvidence} onChange={(event) => change("expectedEvidence", event.target.value)} placeholder="Ex.: relatório, comprovante, registro"/></label>
     <label className="field-wide">Descrição <textarea rows={2} maxLength={1000} value={form.description} onChange={(event) => change("description", event.target.value)} placeholder="Contexto operacional da obrigação"/></label>
     {mode === "edit" && <label className="obligation-active-field"><input type="checkbox" checked={form.status === "active"} onChange={(event) => change("status", event.target.checked ? "active" : "inactive")}/> Condicionante ativa</label>}
-  </div>{error && <p className="client-form-error" role="alert">{error}</p>}<p className="client-form-hint"><b>*</b> Campos obrigatórios · Categorias e registros demonstrativos</p></div><footer className="client-dialog-footer"><button type="button" className="client-cancel" onClick={onClose}>Cancelar</button><button type="submit" className="primary-button">{mode === "create" ? "Cadastrar condicionante" : "Salvar alterações"}</button></footer></form></section></div>;
+  </div>{error && <p className="client-form-error" role="alert">{error}</p>}<p className="client-form-hint"><b>*</b> Campos obrigatórios · Equipe interna demonstrativa</p></div><footer className="client-dialog-footer"><button type="button" className="client-cancel" onClick={onClose}>Cancelar</button><button type="submit" className="primary-button">{mode === "create" ? "Cadastrar condicionante" : "Salvar alterações"}</button></footer></form></section></div>;
 }
 
 function OccurrenceEditor({ occurrence, obligation, memberById, onChange, onEvidence }: { occurrence: ObligationOccurrence; obligation: ObligationRecord; memberById: Map<string, TeamMember>; onChange: (input: OccurrenceInput) => void; onEvidence: () => void }) {
@@ -269,7 +309,7 @@ function OccurrenceEditor({ occurrence, obligation, memberById, onChange, onEvid
   return <article className="occurrence-card"><header><div><strong>{occurrence.referencePeriod}</strong><span>Vencimento {dateLabel(occurrence.dueDate)}</span></div><StatusLabel status={status}/></header><div className="occurrence-controls"><label>Situação <select value={occurrence.status} onChange={(event) => update({ status: event.target.value as OccurrenceStatus })}>{occurrenceStatuses.filter((item) => item !== "Atrasada").map((item) => <option key={item}>{item}</option>)}</select></label><label>Responsável <select value={occurrence.responsibleId} onChange={(event) => update({ responsibleId: event.target.value })}>{demoTeam.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label></div>{occurrence.completedAt && <p className="occurrence-completed-at">Cumprida em {new Date(occurrence.completedAt).toLocaleString("pt-BR", { dateStyle: "medium", timeStyle: "short" })}</p>}<label className="occurrence-observations">Observações<textarea rows={2} value={observations} onChange={(event) => { setObservations(event.target.value); setDirty(true); }} placeholder="Observações desta ocorrência"/></label>{dirty && <button className="occurrence-save-notes" onClick={saveObservations}>Salvar observações</button>}<div className="occurrence-evidence-heading"><strong>Evidências ({occurrence.evidence.length})</strong><button onClick={onEvidence}>Registrar evidência</button></div>{occurrence.evidence.length > 0 && <ul className="evidence-list">{occurrence.evidence.map((evidence) => <li key={evidence.id}><b>{evidence.name}</b><span>Entregue em {dateLabel(evidence.deliveredAt)}</span>{evidence.description && <p>{evidence.description}</p>}{evidence.notes && <small>{evidence.notes}</small>}</li>)}</ul>}<details className="occurrence-history-details"><summary>Histórico da ocorrência ({occurrence.history.length})</summary><ol>{[...occurrence.history].sort((a, b) => a.date.localeCompare(b.date)).map((entry) => <li key={entry.id}><p>{entry.message}</p><span>{memberById.get(entry.actorId)?.name ?? "Equipe demonstrativa"} · {new Date(entry.date).toLocaleString("pt-BR", { dateStyle: "medium", timeStyle: "short" })}</span></li>)}</ol></details></article>;
 }
 
-function ObligationDetails({ obligation, context, memberById, onClose, onEdit, onGenerate, onOccurrenceChange, onEvidence }: { obligation: ObligationRecord; context: Context; memberById: Map<string, TeamMember>; onClose: () => void; onEdit: () => void; onGenerate: () => void; onOccurrenceChange: (id: string, input: OccurrenceInput) => void; onEvidence: (occurrence: ObligationOccurrence, evidence: Omit<ObligationEvidence, "id">) => void }) {
+function ObligationDetails({ obligation, context, memberById, onClose, onEdit, onGenerate, onOccurrenceChange, onEvidence, onArchive, busy }: { obligation: ObligationRecord; context: Context; memberById: Map<string, TeamMember>; onClose: () => void; onEdit: () => void; onGenerate: () => void; onOccurrenceChange: (id: string, input: OccurrenceInput) => void; onEvidence: (occurrence: ObligationOccurrence, evidence: Omit<ObligationEvidence, "id">) => Promise<boolean>; onArchive: () => void; busy: boolean }) {
   const [evidenceOccurrence, setEvidenceOccurrence] = useState<ObligationOccurrence | null>(null);
   const nextDate = nextScheduledDate(obligation);
   const latest = [...obligation.occurrences].sort((a, b) => b.dueDate.localeCompare(a.dueDate))[0];
@@ -283,14 +323,16 @@ function ObligationDetails({ obligation, context, memberById, onClose, onEdit, o
       <section className="client-detail-section"><div className="obligation-detail-section-heading"><div><h3>Ocorrências por período</h3><p>Cada ciclo mantém sua situação, evidências e histórico.</p></div><span>{obligation.occurrences.length}</span></div>{obligation.status === "inactive" && <p className="obligation-inactive-note">Condicionante inativa: não gera alertas nem novas ocorrências.</p>}{orderedOccurrences.map((occurrence) => <OccurrenceEditor key={occurrence.id} occurrence={occurrence} obligation={obligation} memberById={memberById} onChange={(input) => onOccurrenceChange(occurrence.id, input)} onEvidence={() => setEvidenceOccurrence(occurrence)}/>)}</section>
       <section className="client-detail-section obligation-next-due"><h3>Próximos vencimentos</h3>{nextDate ? <div className="obligation-next-date"><CalendarIcon/><div><b>{dateLabel(nextDate)}</b><span>{nearestOccurrence(obligation) ? "Ocorrência já programada" : "Próximo ciclo calculado a partir da periodicidade"}</span></div></div> : <p className="client-detail-text">Sem novos vencimentos previstos.</p>}{obligation.status === "active" && obligation.periodicity !== "Pontual" && <button className="primary-button" onClick={onGenerate} disabled={alreadyGenerated}>Gerar próxima ocorrência</button>}{alreadyGenerated && <small className="obligation-duplicate-note">O ciclo seguinte já possui ocorrência; não será duplicado.</small>}<small className="obligation-schedule-note">Datas calculadas a partir do vencimento informado. Não constituem interpretação de prazo legal.</small></section>
       <section className="client-detail-section"><h3>Histórico da condicionante</h3><ol className="obligation-history">{[...obligation.history].sort((a, b) => a.date.localeCompare(b.date)).map((entry) => <li key={entry.id}><i/><div><p>{entry.message}</p><span>{memberById.get(entry.actorId)?.name ?? "Equipe demonstrativa"} · {new Date(entry.date).toLocaleString("pt-BR", { dateStyle: "medium", timeStyle: "short" })}</span></div></li>)}</ol></section>
-      <div className="client-detail-demo-note"><span className="demo-dot"/> Condicionante e ocorrências demonstrativas salvas neste navegador.</div>
-    </div></aside>{evidenceOccurrence && <EvidenceDialog occurrence={evidenceOccurrence} onClose={() => setEvidenceOccurrence(null)} onSubmit={(evidence) => { onEvidence(evidenceOccurrence, evidence); setEvidenceOccurrence(null); }}/>}</div>;
+      {obligation.status === "active" && <button className="obligation-archive-button" onClick={onArchive} disabled={busy}>Arquivar condicionante</button>}
+      <div className="client-detail-demo-note"><span className="demo-dot"/> Registro persistido no PostgreSQL. Responsáveis internos são demonstrativos.</div>
+    </div></aside>{evidenceOccurrence && <EvidenceDialog occurrence={evidenceOccurrence} onClose={() => setEvidenceOccurrence(null)} onSubmit={async (evidence) => { const ok = await onEvidence(evidenceOccurrence, evidence); if (ok) setEvidenceOccurrence(null); }}/>}</div>;
 }
 
-function EvidenceDialog({ occurrence, onClose, onSubmit }: { occurrence: ObligationOccurrence; onClose: () => void; onSubmit: (evidence: Omit<ObligationEvidence, "id">) => void }) {
+function EvidenceDialog({ occurrence, onClose, onSubmit }: { occurrence: ObligationOccurrence; onClose: () => void; onSubmit: (evidence: Omit<ObligationEvidence, "id">) => Promise<void> }) {
   const [form, setForm] = useState({ name: "", description: "", deliveredAt: "", notes: "" });
   const [error, setError] = useState("");
-  function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!form.name.trim() || !form.deliveredAt) { setError("Informe o nome da evidência e a data de entrega."); return; } onSubmit(form); }
-  return <div className="client-overlay evidence-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="client-dialog evidence-dialog" role="dialog" aria-modal="true" aria-labelledby="evidence-title"><header className="client-dialog-header"><div><span className="dialog-eyebrow">REGISTRO DEMONSTRATIVO</span><h2 id="evidence-title">Registrar evidência</h2><p>Ocorrência {occurrence.referencePeriod} · nenhum arquivo será enviado.</p></div><button type="button" className="client-close" onClick={onClose} aria-label="Fechar"><CloseIcon/></button></header><form onSubmit={submit} noValidate><div className="client-form-body"><div className="obligation-form-grid"><label className="field-wide">Nome da evidência <b>*</b><input autoFocus maxLength={140} value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setError(""); }} placeholder="Ex.: Relatório mensal"/></label><label>Data de entrega <b>*</b><input type="date" value={form.deliveredAt} onChange={(event) => { setForm({ ...form, deliveredAt: event.target.value }); setError(""); }}/></label><label>Descrição <input maxLength={180} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Descrição breve"/></label><label className="field-wide">Observação <textarea rows={2} maxLength={500} value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Observações adicionais"/></label></div>{error && <p className="client-form-error" role="alert">{error}</p>}<p className="obligation-form-note">Este registro é demonstrativo; não representa upload ou armazenamento de arquivo.</p></div><footer className="client-dialog-footer"><button type="button" className="client-cancel" onClick={onClose}>Cancelar</button><button type="submit" className="primary-button">Salvar evidência</button></footer></form></section></div>;
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!form.name.trim() || !form.deliveredAt) { setError("Informe o nome da evidência e a data de entrega."); return; } setSaving(true); try { await onSubmit(form); } finally { setSaving(false); } }
+  return <div className="client-overlay evidence-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}><section className="client-dialog evidence-dialog" role="dialog" aria-modal="true" aria-labelledby="evidence-title"><header className="client-dialog-header"><div><span className="dialog-eyebrow">METADADOS DA EVIDÊNCIA</span><h2 id="evidence-title">Registrar evidência</h2><p>Ocorrência {occurrence.referencePeriod} · nenhum arquivo será enviado.</p></div><button type="button" className="client-close" onClick={onClose} aria-label="Fechar"><CloseIcon/></button></header><form onSubmit={submit} noValidate><div className="client-form-body"><div className="obligation-form-grid"><label className="field-wide">Nome da evidência <b>*</b><input autoFocus maxLength={140} value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setError(""); }} placeholder="Ex.: Relatório mensal"/></label><label>Data de entrega <b>*</b><input type="date" value={form.deliveredAt} onChange={(event) => { setForm({ ...form, deliveredAt: event.target.value }); setError(""); }}/></label><label>Descrição <input maxLength={180} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Descrição breve"/></label><label className="field-wide">Observação <textarea rows={2} maxLength={500} value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Observações adicionais"/></label></div>{error && <p className="client-form-error" role="alert">{error}</p>}<p className="obligation-form-note">Os metadados são persistidos; não há upload ou armazenamento do arquivo.</p></div><footer className="client-dialog-footer"><button type="button" className="client-cancel" onClick={onClose} disabled={saving}>Cancelar</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Salvando…" : "Salvar evidência"}</button></footer></form></section></div>;
 }
 function DetailRow({ label, value }: { label: string; value: string }) { return <div className="client-detail-row"><span>{label}</span><strong>{value}</strong></div>; }
