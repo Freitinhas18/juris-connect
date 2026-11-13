@@ -17,5 +17,6 @@ $env:DOCUMENT_ENCRYPTION_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 $env:PORT = '3335'
 pnpm --filter @juris-connect/api db:migrate
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$env:CORS_ORIGINS = 'http://127.0.0.1:5174'
 pnpm --filter @juris-connect/api exec tsx src/db/seed-demo-test.ts
 exit $LASTEXITCODE
